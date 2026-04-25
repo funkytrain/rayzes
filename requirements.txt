@@ -1,0 +1,42 @@
+# --- CORE ---
+numpy>=2.1
+pandas>=2.2
+python-dateutil>=2.9
+
+# --- STREAMLIT ---
+streamlit>=1.32.0
+streamlit-folium>=0.18.0
+
+# --- GRAFOS ---
+networkx>=3.2
+pyvis>=0.3.2
+ipython>=5.3.0
+jsonpickle>=1.4.1
+
+# --- MAPAS ---
+folium>=0.15.1
+
+# --- XML (GRAMPS parsing) ---
+lxml>=4.9.4
+
+# --- BACKEND ---
+requests>=2.31.0
+
+# --- CLUSTERING ---
+scikit-learn>=1.4
+
+# --- MATCHING ---
+rapidfuzz>=3.6
+jellyfish>=1.0.0
+
+pyarrow>=15.0
+
+# --- VISUALIZACIÓN INTERACTIVA ---
+plotly>=5.18.0
+
+# --- CONSANGUINIDAD ---
+matplotlib>=3.5
+seaborn>=0.11
+scipy>=1.7
+jinja2>=3.0
+pdfkit>=1.0  # Requiere wkhtmltopdf instalado a nivel de SO (ver README)

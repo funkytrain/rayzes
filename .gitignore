@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.streamlit/
+temp_*.gramps
+temp_*.xml
+data/
+witnesses_applied_event_groups.csv
+.claude/
+nul
