@@ -414,6 +414,14 @@ def parse_gramps_xml_full(gramps_path):
                 if ev_h and family_subject:
                     event_to_family_subject[ev_h] = family_subject
 
+        # 3b. Build inverted index: event_handle → (person_id, name) for Primary role.
+        # Avoids O(persons × event_refs) scan inside the event loop (was O(n²)).
+        primary_person_by_event: dict = {}
+        for _pid, _pdata in persons_map.items():
+            for _evref in _pdata.get('event_refs', []):
+                if _evref['role'] == 'Primary':
+                    primary_person_by_event[_evref['handle']] = (_pid, _pdata['name'])
+
         # 3. Parse events with witnesses
         events_data = []
         for event_el in root.findall(".//"+GT("event")):
@@ -466,17 +474,8 @@ def parse_gramps_xml_full(gramps_path):
                     witness_note = " | ".join(witness_notes) if witness_notes else ""
                     witnesses.append((attr_value.strip(), witness_note))
 
-            # Find subject person (person with Primary role for this event)
-            subject_id = None
-            subject_name = ""
-            for pid, pdata in persons_map.items():
-                for evref in pdata.get('event_refs', []):
-                    if evref['handle'] == event_handle and evref['role'] == 'Primary':
-                        subject_id = pid
-                        subject_name = pdata['name']
-                        break
-                if subject_id:
-                    break
+            # Find subject person via pre-built O(1) index (was O(n²) nested loop).
+            subject_id, subject_name = primary_person_by_event.get(event_handle, (None, ""))
             # Fallback for Marriage events owned by a family (no Primary person)
             if not subject_name and event_handle in event_to_family_subject:
                 subject_name = event_to_family_subject[event_handle]

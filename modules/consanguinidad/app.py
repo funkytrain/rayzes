@@ -731,35 +731,56 @@ def find_paths_to_ancestor(G, start, target, max_gen=12, multi=False):
     Encuentra rutas de start → target subiendo por líneas parentales.
     Si multi=False -> devuelve solo la primera ruta encontrada.
     Si multi=True  -> devuelve *todas* las rutas hasta target (lista de listas).
+
+    Optimizaciones vs. versión original:
+    - deque + popleft() en lugar de list.pop(0) (O(1) vs O(n) por extracción).
+    - multi=False usa parent_map: sin copiar rutas, O(1) por nodo.
+    - multi=True usa tuples inmutables: 'path + (parent,)' es más rápido que
+      'path + [parent]' porque las tuples no tienen sobre-asignación de buffer.
     """
+    if start == target:
+        return [[start]] if multi else [start]
 
+    if not multi:
+        # BFS con parent tracking: sin copias de ruta, O(1) por nodo.
+        parent_map: dict = {start: None}
+        q: deque = deque([(start, 0)])
+        while q:
+            current, depth = q.popleft()
+            if depth >= max_gen:
+                continue
+            for parent in G.predecessors(current):
+                if parent in parent_map:
+                    continue
+                parent_map[parent] = current
+                if parent == target:
+                    path = []
+                    node = target
+                    while node is not None:
+                        path.append(node)
+                        node = parent_map[node]
+                    path.reverse()
+                    return path
+                q.append((parent, depth + 1))
+        return None
+
+    # multi=True: necesitamos todas las rutas — cada entrada de la cola
+    # lleva su propia tupla de ruta para no mezclar caminos distintos.
     results = []
-    queue = [(start, [start])]  # (nodo actual, ruta acumulada)
-
-    while queue:
-        current, path = queue.pop(0)
-
-        if current == target:
-            if not multi:
-                return path
-            else:
-                results.append(path)
-                continue  # seguimos buscando más rutas posibles
-
+    q = deque([(start, (start,))])
+    while q:
+        current, path = q.popleft()
         if len(path) - 1 >= max_gen:
             continue
-
-        # padres del nodo actual
         for parent in G.predecessors(current):
-            if parent not in path:  # evitamos bucles
-                queue.append((parent, path + [parent]))
-
-    # si multi, devolver lista (posiblemente vacía)
-    if multi:
-        return results
-
-    # si no multi y no se encontró ruta
-    return None
+            if parent in path:  # evitar ciclos dentro de esta ruta
+                continue
+            new_path = path + (parent,)
+            if parent == target:
+                results.append(list(new_path))
+                continue
+            q.append((parent, new_path))
+    return results
 
 def find_common_ancestors(G, a_id, b_id, max_gen=12):
     """

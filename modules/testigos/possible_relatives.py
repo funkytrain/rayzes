@@ -228,22 +228,29 @@ def detect_possible_relatives(
 
     results: dict[str, PossibleRelative] = {}
 
-    for _, row in df.iterrows():
-        event_id = str(row.get("event_id", ""))
-        witness_canon = str(row.get("witness_canon", "") or "")
-        subj_name = str(row.get("subj_name", "") or "")
-        subj_id = str(row.get("subj_id", "") or "")
-        date_iso = str(row.get("date_iso", "") or "")
-        evt_type = str(row.get("type", "") or "")
-        place_name = str(row.get("place_name", "") or "")
+    # Extracción vectorizada de columnas como listas Python.
+    # Más rápido que iterrows() (evita la construcción de Series por fila)
+    # y más simple que itertuples() (sin offset de índice ni colisión con keywords).
+    def _col_list(name: str) -> list:
+        if name in df.columns:
+            return df[name].fillna("").astype(str).tolist()
+        return [""] * len(df)
+
+    _event_ids      = _col_list("event_id")
+    _witness_canons = _col_list("witness_canon")
+    _subj_names     = _col_list("subj_name")
+    _subj_ids       = _col_list("subj_id")
+    _date_isos      = _col_list("date_iso")
+    _evt_types      = _col_list("type")
+    _place_names    = _col_list("place_name")
+
+    for (event_id, witness_canon, subj_name, subj_id,
+         date_iso, evt_type, place_name) in zip(
+            _event_ids, _witness_canons, _subj_names, _subj_ids,
+            _date_isos, _evt_types, _place_names):
 
         if not witness_canon or not subj_name:
             continue
-        # Solo testigos confirmados (tienen witness_canon distinto de witness_raw
-        # o están en el grupo de confirmados). En la práctica, en este proyecto
-        # "confirmado" significa que el investigador ha validado su identidad,
-        # lo que se refleja en event_groups o en la identidad canónica.
-        # Para el análisis consideramos todos los testigos con canon no vacío.
 
         wit_extracted: ExtractedSurnames = system.extract(witness_canon)
         subj_extracted: ExtractedSurnames = system.extract(subj_name)
@@ -256,42 +263,49 @@ def detect_possible_relatives(
 
         best: Optional[PossibleRelative] = None
 
+        # Pre-normalizar listas para evitar llamadas repetidas a _normalize
+        # en el loop doble (wit_pos × subj_pos).
+        wit_norms  = [_normalize(ws) for ws in wit_surnames]
+        subj_norms = [_normalize(ss) for ss in subj_surnames]
+
+        # Pre-calcular _normalize(subj_name) para el lookup de kinship_map
+        # (era recalculado en cada iteración del loop de kin_entries).
+        subj_name_norm = _normalize(subj_name)
+
+        in_tree = witness_canon in confirmed_gramps
+
+        # Buscar parentesco en kinship_map una sola vez por fila.
+        # Acepta dos formatos:
+        #   1. {event_id: kinship_label}  — indexado por evento (preciso)
+        #   2. {witness_canon: [{subj_name, kinship_label}]}  — legacy
+        kinship_found = False
+        kinship_label = ""
+        if kinship_map:
+            direct = kinship_map.get(event_id)
+            if direct and isinstance(direct, str):
+                kinship_found = True
+                kinship_label = direct
+            else:
+                for kin_entry in kinship_map.get(witness_canon, []):
+                    if not isinstance(kin_entry, dict):
+                        continue
+                    ksubj = str(kin_entry.get("subj_name", ""))
+                    ksubj_norm = _normalize(ksubj)
+                    if ksubj_norm == subj_name_norm or (ksubj and ksubj_norm in subj_name_norm):
+                        kinship_found = True
+                        kinship_label = str(kin_entry.get("kinship_label", ""))
+                        break
+
         # Comparar todos los pares de posiciones (wit_pos, subj_pos)
-        for wi, ws in enumerate(wit_surnames):
-            for si, ss in enumerate(subj_surnames):
+        for wi, (ws, ws_norm) in enumerate(zip(wit_surnames, wit_norms)):
+            for si, (ss, _ss_norm) in enumerate(zip(subj_surnames, subj_norms)):
                 sim = _surname_similarity(ws, ss)
                 if not _meets_threshold(sim):
                     continue
 
-                freq_pen = system.frequency_penalty(_normalize(ws))
+                freq_pen = system.frequency_penalty(ws_norm)
                 pw_wit = system.match_weight(wi)
                 pw_subj = system.match_weight(si)
-
-                in_tree = witness_canon in confirmed_gramps
-                # Buscar parentesco en kinship_map.
-                # Acepta dos formatos:
-                #   1. {event_id: kinship_label}  — indexado por evento (preciso)
-                #   2. {witness_canon: [{subj_name, kinship_label}]}  — legacy
-                kinship_found = False
-                kinship_label = ""
-                if kinship_map:
-                    # Formato 1: clave directa por event_id
-                    direct = kinship_map.get(event_id)
-                    if direct and isinstance(direct, str):
-                        kinship_found = True
-                        kinship_label = direct
-                    else:
-                        # Formato 2: lista de entradas por witness_canon
-                        for kin_entry in kinship_map.get(witness_canon, []):
-                            if not isinstance(kin_entry, dict):
-                                continue
-                            ksubj = str(kin_entry.get("subj_name", ""))
-                            # Coincidencia fuzzy para tolerar diferencias menores
-                            if (_normalize(ksubj) == _normalize(subj_name) or
-                                    (ksubj and _normalize(ksubj) in _normalize(subj_name))):
-                                kinship_found = True
-                                kinship_label = str(kin_entry.get("kinship_label", ""))
-                                break
 
                 score, confidence = _compute_score(
                     sim, freq_pen, pw_wit, pw_subj, in_tree, kinship_found
