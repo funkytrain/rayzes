@@ -419,7 +419,7 @@ def parse_gramps_xml_full(gramps_path):
         primary_person_by_event: dict = {}
         for _pid, _pdata in persons_map.items():
             for _evref in _pdata.get('event_refs', []):
-                if _evref['role'] == 'Primary':
+                if _evref['role'] == 'Primary' and _evref['handle'] not in primary_person_by_event:
                     primary_person_by_event[_evref['handle']] = (_pid, _pdata['name'])
 
         # 3. Parse events with witnesses

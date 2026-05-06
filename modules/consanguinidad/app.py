@@ -726,7 +726,7 @@ def ancestors_with_distance(G, start_id, max_gen=10):
                 q.append((par, d+1))
     return dist
 
-def find_paths_to_ancestor(G, start, target, max_gen=12, multi=False):
+def find_paths_to_ancestor(G, start, target, max_gen=12, multi=False) -> list | None:
     """
     Encuentra rutas de start → target subiendo por líneas parentales.
     Si multi=False -> devuelve solo la primera ruta encontrada.

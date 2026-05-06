@@ -14,3 +14,8 @@ data/
 witnesses_applied_event_groups.csv
 .claude/
 nul
+
+# Tests locales (no se commitean)
+tests/
+.agents/
+skills-lock.json

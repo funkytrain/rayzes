@@ -1,0 +1,2 @@
+# Dependencias de desarrollo/testing (no necesarias en producción)
+pytest>=8.0

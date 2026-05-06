@@ -116,6 +116,11 @@ class PossibleRelative:
 
 _FUZZY_THRESHOLD = 82   # mínimo para considerar coincidencia (0–100)
 
+def _col_list(df, name: str) -> list:
+    if name in df.columns:
+        return df[name].fillna("").astype(str).tolist()
+    return [""] * len(df)
+
 def _surname_similarity(a: str, b: str) -> float:
     """Retorna similitud 0–1 entre dos apellidos normalizados."""
     a, b = _normalize(a), _normalize(b)
@@ -231,18 +236,13 @@ def detect_possible_relatives(
     # Extracción vectorizada de columnas como listas Python.
     # Más rápido que iterrows() (evita la construcción de Series por fila)
     # y más simple que itertuples() (sin offset de índice ni colisión con keywords).
-    def _col_list(name: str) -> list:
-        if name in df.columns:
-            return df[name].fillna("").astype(str).tolist()
-        return [""] * len(df)
-
-    _event_ids      = _col_list("event_id")
-    _witness_canons = _col_list("witness_canon")
-    _subj_names     = _col_list("subj_name")
-    _subj_ids       = _col_list("subj_id")
-    _date_isos      = _col_list("date_iso")
-    _evt_types      = _col_list("type")
-    _place_names    = _col_list("place_name")
+    _event_ids = _col_list(df, "event_id")
+    _witness_canons = _col_list(df, "witness_canon")
+    _subj_names = _col_list(df, "subj_name")
+    _subj_ids = _col_list(df, "subj_id")
+    _date_isos = _col_list(df, "date_iso")
+    _evt_types = _col_list(df, "type")
+    _place_names = _col_list(df, "place_name")
 
     for (event_id, witness_canon, subj_name, subj_id,
          date_iso, evt_type, place_name) in zip(
@@ -263,9 +263,12 @@ def detect_possible_relatives(
 
         best: Optional[PossibleRelative] = None
 
-        # Pre-normalizar listas para evitar llamadas repetidas a _normalize
-        # en el loop doble (wit_pos × subj_pos).
-        wit_norms  = [_normalize(ws) for ws in wit_surnames]
+        # Pre-normalizar apellidos del testigo para ws_norm, usado en
+        # frequency_penalty() dentro del loop. subj_norms se computa aquí
+        # pero _surname_similarity() normaliza internamente, así que no
+        # elimina llamadas redundantes; reservado para cuando se refactorice
+        # _surname_similarity() para aceptar formas pre-normalizadas.
+        wit_norms = [_normalize(ws) for ws in wit_surnames]
         subj_norms = [_normalize(ss) for ss in subj_surnames]
 
         # Pre-calcular _normalize(subj_name) para el lookup de kinship_map
