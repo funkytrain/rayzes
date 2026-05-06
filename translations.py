@@ -886,6 +886,137 @@ TRANSLATIONS = {
         "gen_ctx_husband_label": "Esposo",
         "gen_ctx_wife_label": "Esposa",
 
+        # ── General — Identificación de candidatos ───────────────────────────
+        "gen_subpage_candidatos": "Identificación de candidatos",
+        "gen_cand_title": "Identificación de candidatos",
+        "gen_cand_caption": (
+            "Estima la probabilidad de que un individuo de padres desconocidos sea uno "
+            "de varios candidatos, comparando los testigos de su matrimonio con los "
+            "testigos de los bautismos y matrimonios del candidato y sus hermanos."
+        ),
+        "gen_cand_target_header": "### 1. Matrimonio objetivo",
+        "gen_cand_target_help": (
+            "Selecciona el matrimonio del árbol en el que figura el individuo cuyos padres "
+            "desconoces. Se extraerán automáticamente sus testigos del archivo GRAMPS."
+        ),
+        "gen_cand_select_marriage": "Matrimonio objetivo",
+        "gen_cand_no_marriages": "No se encontraron matrimonios en el árbol.",
+        "gen_cand_witnesses_label": "Testigos del matrimonio extraídos del árbol:",
+        "gen_cand_no_witnesses": "No se encontraron testigos registrados en el árbol para este evento. Comprueba que el archivo GRAMPS incluye atributos de tipo «Testigo» o notas en el evento de matrimonio.",
+        "gen_cand_typical_age_header": "Edad típica al matrimonio (calculada del árbol)",
+        "gen_cand_typical_age_male_fmt": "Hombres: media {mean:.1f} a. (σ = {std:.1f}, n = {n} individuos del árbol)",
+        "gen_cand_typical_age_female_fmt": "Mujeres: media {mean:.1f} a. (σ = {std:.1f}, n = {n} individuos del árbol)",
+        "gen_cand_typical_age_default_m": "Hombres: sin datos suficientes → usando valor por defecto de 26 a. ± 6",
+        "gen_cand_typical_age_default_f": "Mujeres: sin datos suficientes → usando valor por defecto de 22 a. ± 5",
+        "gen_cand_typical_age_expanded_window": "ℹ️ Ventana temporal ampliada a ± {yrs} años para obtener muestra suficiente (n ≥ 5).",
+        "gen_cand_candidates_header": "### 2. Candidatos",
+        "gen_cand_candidates_help": (
+            "Introduce manualmente los datos de cada candidato. Los testigos son la evidencia clave: "
+            "introduce un nombre por línea en cada campo de testigos."
+        ),
+        "gen_cand_add_btn": "➕ Añadir candidato",
+        "gen_cand_max_reached": "Máximo de 6 candidatos alcanzado.",
+        "gen_cand_candidate_label": "Candidato {n}: {name}",
+        "gen_cand_candidate_label_empty": "Candidato {n}",
+        "gen_cand_remove_btn": "Eliminar",
+        "gen_cand_name": "Nombre completo",
+        "gen_cand_baptism_year": "Año de bautismo",
+        "gen_cand_baptism_place": "Lugar de bautismo",
+        "gen_cand_baptism_witnesses": "Testigos del bautismo (uno por línea)",
+        "gen_cand_baptism_witnesses_help": "Introduce cada testigo en una línea separada. Las variantes ortográficas se detectan automáticamente.",
+        "gen_cand_siblings_header": "**Hermanos/as**",
+        "gen_cand_add_sibling_btn": "➕ Añadir hermano/a",
+        "gen_cand_sibling_label": "Hermano/a {n}: {name}",
+        "gen_cand_sibling_label_empty": "Hermano/a {n}",
+        "gen_cand_remove_sibling_btn": "✕ Eliminar",
+        "gen_cand_sib_name": "Nombre",
+        "gen_cand_sib_bap_year": "Año bautismo",
+        "gen_cand_sib_bap_place": "Lugar bautismo",
+        "gen_cand_sib_bap_witnesses": "Testigos bautismo (uno por línea)",
+        "gen_cand_sib_mar_year": "Año matrimonio",
+        "gen_cand_sib_mar_place": "Lugar matrimonio",
+        "gen_cand_sib_mar_witnesses": "Testigos matrimonio (uno por línea)",
+        "gen_cand_config_header": "⚙️ Configuración de factores",
+        "gen_cand_fuzzy_label": "Umbral de similitud fuzzy para testigos (%)",
+        "gen_cand_geo_scale_label": "Escala de distancia geográfica (km)",
+        "gen_cand_use_sib_mar": "Incluir testigos de matrimonios de hermanos",
+        "gen_cand_use_surnames": "Incluir factor de apellidos de testigos",
+        "gen_cand_weights_note": "Los pesos no necesitan sumar 100; se normalizan automáticamente. Un factor sin datos no penaliza.",
+        "gen_cand_weight_f1": "F1 — testigos bautismo propio",
+        "gen_cand_weight_f2": "F2 — testigos bautismos hermanos",
+        "gen_cand_weight_f3": "F3 — testigos matrimonios hermanos",
+        "gen_cand_weight_f4": "F4 — coherencia temporal",
+        "gen_cand_weight_f5": "F5 — coherencia geográfica",
+        "gen_cand_weight_f6": "F6 — apellidos de testigos",
+        "gen_cand_calculate_btn": "🔍 Calcular probabilidades",
+        "gen_cand_no_candidates": "Añade al menos un candidato antes de calcular.",
+        "gen_cand_results_header": "### 3. Resultados",
+        "gen_cand_col_candidate": "Candidato",
+        "gen_cand_col_prob": "Probabilidad",
+        "gen_cand_col_f1": "Bautismo",
+        "gen_cand_col_f2": "Hnos. Baut.",
+        "gen_cand_col_f3": "Hnos. Mat.",
+        "gen_cand_col_f4": "Temporal",
+        "gen_cand_col_f5": "Geog.",
+        "gen_cand_col_f6": "Apellidos",
+        "gen_cand_no_data_cell": "—",
+        "gen_cand_conf_high": "✅ Alta confianza",
+        "gen_cand_conf_medium": "🟡 Posible",
+        "gen_cand_conf_low": "🔴 Poco probable",
+        "gen_cand_detail_matches": "Testigos coincidentes",
+        "gen_cand_detail_no_matches": "Ningún testigo en común",
+        "gen_cand_detail_nonmatches": "Testigos sin coincidencia",
+        "gen_cand_narrative_header": "### 4. Resumen y conclusiones",
+        "gen_cand_narr_intro": (
+            "Se analiza el matrimonio celebrado en **{place}** en el año **{year}**. "
+            "Los testigos presentes en el acta son: {witnesses}. "
+            "Se han evaluado {n} candidato(s) para identificar al contrayente de padres desconocidos."
+        ),
+        "gen_cand_narr_age": (
+            "Para la época y zona del matrimonio, la edad media al casarse era de "
+            "**{mean_m:.0f} años** para hombres y **{mean_f:.0f} años** para mujeres "
+            "(calculado sobre {n_m} y {n_f} individuos del árbol respectivamente). "
+            "Por tanto, el individuo nacería aproximadamente entre **{y_min}** y **{y_max}**."
+        ),
+        "gen_cand_narr_age_default": (
+            "No se encontraron suficientes datos en el árbol para calcular la edad típica al "
+            "matrimonio en esta época y zona; se usaron valores por defecto (hombres: ~26 a., mujeres: ~22 a.)."
+        ),
+        "gen_cand_narr_candidate_intro": "**{name}** (bautizado/a en {bap_year_str} en {bap_place_str}): ",
+        "gen_cand_narr_witnesses_found": "comparte **{n} testigo(s)** con el matrimonio objetivo ({witness_list})",
+        "gen_cand_narr_witnesses_none": "no comparte ningún testigo con el matrimonio objetivo",
+        "gen_cand_narr_witnesses_no_data": "no se han introducido testigos de bautismo",
+        "gen_cand_narr_temporal_ok": "su año de bautismo ({year}) está dentro del rango esperado",
+        "gen_cand_narr_temporal_out": "su año de bautismo ({year}) queda fuera del rango esperado ({y_min}–{y_max})",
+        "gen_cand_narr_temporal_nodata": "no hay año de bautismo registrado",
+        "gen_cand_narr_siblings": "Entre sus hermanos/as: {sibling_list}.",
+        "gen_cand_narr_sib_bap_match": "{name} (bautismo: {n_match} testigo(s) en común)",
+        "gen_cand_narr_sib_bap_no_match": "{name} (bautismo: sin testigos en común)",
+        "gen_cand_narr_sib_mar_match": "matrimonio de {name}: {n_match} testigo(s) en común",
+        "gen_cand_narr_sib_mar_no_match": "matrimonio de {name}: sin testigos en común",
+        "gen_cand_narr_prob": "Probabilidad estimada: **{prob:.0%}** ({conf}).",
+        "gen_cand_narr_conclusion_single": (
+            "**Conclusión:** El candidato más probable es **{winner}** con una probabilidad estimada "
+            "del **{prob:.0%}**. La evidencia más determinante proviene de {main_factor}."
+        ),
+        "gen_cand_narr_conclusion_tie": (
+            "**Conclusión:** Los candidatos **{c1}** y **{c2}** presentan probabilidades similares "
+            "({p1:.0%} y {p2:.0%} respectivamente), lo que sugiere que se necesitan datos adicionales "
+            "para una identificación definitiva."
+        ),
+        "gen_cand_narr_conclusion_one": (
+            "**Conclusión:** Solo se ha evaluado un candidato: **{name}** con probabilidad **{prob:.0%}**. "
+            "Añade más candidatos para comparar."
+        ),
+        "gen_cand_narr_factor_f1": "el solapamiento de testigos en el bautismo propio",
+        "gen_cand_narr_factor_f2": "el solapamiento de testigos en bautismos de hermanos",
+        "gen_cand_narr_factor_f3": "el solapamiento de testigos en matrimonios de hermanos",
+        "gen_cand_narr_factor_f4": "la coherencia temporal",
+        "gen_cand_narr_factor_f5": "la coherencia geográfica",
+        "gen_cand_narr_factor_f6": "los apellidos de los testigos",
+        "gen_cand_bap_year_unknown": "año desconocido",
+        "gen_cand_bap_place_unknown": "lugar desconocido",
+
         # ── Consanguinidad ────────────────────────────────────────────────────
         "title": "Consanguinidad — análisis desde Gramps (.gramps)",
         "upload_params": "Carga y parámetros",
@@ -1926,6 +2057,137 @@ TRANSLATIONS = {
         "gen_ctx_family_label_one": "{name}",
         "gen_ctx_husband_label": "Husband",
         "gen_ctx_wife_label": "Wife",
+
+        # ── General — Candidate Identification ───────────────────────────────
+        "gen_subpage_candidatos": "Candidate Identification",
+        "gen_cand_title": "Candidate Identification",
+        "gen_cand_caption": (
+            "Estimates the probability that an individual with unknown parents is one of "
+            "several candidates, by comparing witnesses from their marriage to witnesses "
+            "from the candidate's baptism and their siblings' baptisms and marriages."
+        ),
+        "gen_cand_target_header": "### 1. Target Marriage",
+        "gen_cand_target_help": (
+            "Select the marriage in the tree in which the individual whose parents are unknown "
+            "appears as a contracting party. Witnesses will be extracted automatically from the GRAMPS file."
+        ),
+        "gen_cand_select_marriage": "Target marriage",
+        "gen_cand_no_marriages": "No marriages found in the tree.",
+        "gen_cand_witnesses_label": "Witnesses extracted from the tree:",
+        "gen_cand_no_witnesses": "No witnesses found in the tree for this event. Check that the GRAMPS file includes 'Witness' attributes or notes on the marriage event.",
+        "gen_cand_typical_age_header": "Typical marriage age (calculated from tree)",
+        "gen_cand_typical_age_male_fmt": "Men: mean {mean:.1f} yrs (σ = {std:.1f}, n = {n} individuals from tree)",
+        "gen_cand_typical_age_female_fmt": "Women: mean {mean:.1f} yrs (σ = {std:.1f}, n = {n} individuals from tree)",
+        "gen_cand_typical_age_default_m": "Men: insufficient data → using default of 26 yrs ± 6",
+        "gen_cand_typical_age_default_f": "Women: insufficient data → using default of 22 yrs ± 5",
+        "gen_cand_typical_age_expanded_window": "ℹ️ Time window expanded to ± {yrs} years to reach sufficient sample (n ≥ 5).",
+        "gen_cand_candidates_header": "### 2. Candidates",
+        "gen_cand_candidates_help": (
+            "Enter each candidate's data manually. Witnesses are the key evidence: "
+            "enter one name per line in each witness field."
+        ),
+        "gen_cand_add_btn": "➕ Add candidate",
+        "gen_cand_max_reached": "Maximum of 6 candidates reached.",
+        "gen_cand_candidate_label": "Candidate {n}: {name}",
+        "gen_cand_candidate_label_empty": "Candidate {n}",
+        "gen_cand_remove_btn": "Remove",
+        "gen_cand_name": "Full name",
+        "gen_cand_baptism_year": "Baptism year",
+        "gen_cand_baptism_place": "Baptism place",
+        "gen_cand_baptism_witnesses": "Baptism witnesses (one per line)",
+        "gen_cand_baptism_witnesses_help": "Enter each witness on a separate line. Spelling variants are detected automatically.",
+        "gen_cand_siblings_header": "**Siblings**",
+        "gen_cand_add_sibling_btn": "➕ Add sibling",
+        "gen_cand_sibling_label": "Sibling {n}: {name}",
+        "gen_cand_sibling_label_empty": "Sibling {n}",
+        "gen_cand_remove_sibling_btn": "✕ Remove",
+        "gen_cand_sib_name": "Name",
+        "gen_cand_sib_bap_year": "Baptism year",
+        "gen_cand_sib_bap_place": "Baptism place",
+        "gen_cand_sib_bap_witnesses": "Baptism witnesses (one per line)",
+        "gen_cand_sib_mar_year": "Marriage year",
+        "gen_cand_sib_mar_place": "Marriage place",
+        "gen_cand_sib_mar_witnesses": "Marriage witnesses (one per line)",
+        "gen_cand_config_header": "⚙️ Factor configuration",
+        "gen_cand_fuzzy_label": "Fuzzy similarity threshold for witnesses (%)",
+        "gen_cand_geo_scale_label": "Geographic distance scale (km)",
+        "gen_cand_use_sib_mar": "Include witnesses from siblings' marriages",
+        "gen_cand_use_surnames": "Include witness surname factor",
+        "gen_cand_weights_note": "Weights do not need to sum to 100; they are normalised automatically. A factor with no data does not penalise.",
+        "gen_cand_weight_f1": "F1 — own baptism witnesses",
+        "gen_cand_weight_f2": "F2 — siblings' baptism witnesses",
+        "gen_cand_weight_f3": "F3 — siblings' marriage witnesses",
+        "gen_cand_weight_f4": "F4 — temporal coherence",
+        "gen_cand_weight_f5": "F5 — geographic coherence",
+        "gen_cand_weight_f6": "F6 — witness surnames",
+        "gen_cand_calculate_btn": "🔍 Calculate probabilities",
+        "gen_cand_no_candidates": "Add at least one candidate before calculating.",
+        "gen_cand_results_header": "### 3. Results",
+        "gen_cand_col_candidate": "Candidate",
+        "gen_cand_col_prob": "Probability",
+        "gen_cand_col_f1": "Baptism",
+        "gen_cand_col_f2": "Sibs. Bapt.",
+        "gen_cand_col_f3": "Sibs. Mar.",
+        "gen_cand_col_f4": "Temporal",
+        "gen_cand_col_f5": "Geog.",
+        "gen_cand_col_f6": "Surnames",
+        "gen_cand_no_data_cell": "—",
+        "gen_cand_conf_high": "✅ High confidence",
+        "gen_cand_conf_medium": "🟡 Possible",
+        "gen_cand_conf_low": "🔴 Unlikely",
+        "gen_cand_detail_matches": "Matching witnesses",
+        "gen_cand_detail_no_matches": "No witnesses in common",
+        "gen_cand_detail_nonmatches": "Unmatched witnesses",
+        "gen_cand_narrative_header": "### 4. Summary and conclusions",
+        "gen_cand_narr_intro": (
+            "The marriage held in **{place}** in the year **{year}** is analysed. "
+            "The witnesses recorded in the act are: {witnesses}. "
+            "{n} candidate(s) have been evaluated to identify the contracting party with unknown parents."
+        ),
+        "gen_cand_narr_age": (
+            "For the period and area of the marriage, the average age at marriage was "
+            "**{mean_m:.0f} years** for men and **{mean_f:.0f} years** for women "
+            "(calculated from {n_m} and {n_f} individuals in the tree respectively). "
+            "The individual would therefore have been born approximately between **{y_min}** and **{y_max}**."
+        ),
+        "gen_cand_narr_age_default": (
+            "Insufficient data was found in the tree to calculate typical marriage age for "
+            "this period and area; default values were used (men: ~26 yrs, women: ~22 yrs)."
+        ),
+        "gen_cand_narr_candidate_intro": "**{name}** (baptised in {bap_year_str} in {bap_place_str}): ",
+        "gen_cand_narr_witnesses_found": "shares **{n} witness(es)** with the target marriage ({witness_list})",
+        "gen_cand_narr_witnesses_none": "shares no witnesses with the target marriage",
+        "gen_cand_narr_witnesses_no_data": "no baptism witnesses were entered",
+        "gen_cand_narr_temporal_ok": "their baptism year ({year}) falls within the expected range",
+        "gen_cand_narr_temporal_out": "their baptism year ({year}) falls outside the expected range ({y_min}–{y_max})",
+        "gen_cand_narr_temporal_nodata": "no baptism year was recorded",
+        "gen_cand_narr_siblings": "Among their siblings: {sibling_list}.",
+        "gen_cand_narr_sib_bap_match": "{name} (baptism: {n_match} witness(es) in common)",
+        "gen_cand_narr_sib_bap_no_match": "{name} (baptism: no witnesses in common)",
+        "gen_cand_narr_sib_mar_match": "marriage of {name}: {n_match} witness(es) in common",
+        "gen_cand_narr_sib_mar_no_match": "marriage of {name}: no witnesses in common",
+        "gen_cand_narr_prob": "Estimated probability: **{prob:.0%}** ({conf}).",
+        "gen_cand_narr_conclusion_single": (
+            "**Conclusion:** The most probable candidate is **{winner}** with an estimated "
+            "probability of **{prob:.0%}**. The most decisive evidence comes from {main_factor}."
+        ),
+        "gen_cand_narr_conclusion_tie": (
+            "**Conclusion:** Candidates **{c1}** and **{c2}** show similar probabilities "
+            "({p1:.0%} and {p2:.0%} respectively), suggesting that additional data is needed "
+            "for a definitive identification."
+        ),
+        "gen_cand_narr_conclusion_one": (
+            "**Conclusion:** Only one candidate has been evaluated: **{name}** with probability **{prob:.0%}**. "
+            "Add more candidates to compare."
+        ),
+        "gen_cand_narr_factor_f1": "the witness overlap at the candidate's own baptism",
+        "gen_cand_narr_factor_f2": "the witness overlap at siblings' baptisms",
+        "gen_cand_narr_factor_f3": "the witness overlap at siblings' marriages",
+        "gen_cand_narr_factor_f4": "temporal coherence",
+        "gen_cand_narr_factor_f5": "geographic coherence",
+        "gen_cand_narr_factor_f6": "witness surnames",
+        "gen_cand_bap_year_unknown": "unknown year",
+        "gen_cand_bap_place_unknown": "unknown place",
 
         # ── Consanguinity ─────────────────────────────────────────────────────
         "title": "ConsanguinityLab — Gramps Analysis",

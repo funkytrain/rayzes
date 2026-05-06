@@ -2250,6 +2250,974 @@ def page_contexto_historico(content_bytes: bytes):
 
 
 # ============================================================
+# Identificación de candidatos — utilidades
+# ============================================================
+
+try:
+    from rapidfuzz import fuzz as _rfuzz
+    _CAND_HAS_RF = True
+except ImportError:
+    _CAND_HAS_RF = False
+
+try:
+    import unicodedata as _unicodedata
+except ImportError:
+    _unicodedata = None
+
+import uuid as _uuid_lib
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return R * 2 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _norm_name(name: str) -> str:
+    name = (name or '').lower().strip()
+    if _unicodedata:
+        name = _unicodedata.normalize("NFD", name)
+        name = "".join(c for c in name if _unicodedata.category(c) != "Mn")
+    name = re.sub(r"\s+", " ", name)
+    return name
+
+
+def _parse_cand_extra(content_bytes: bytes):
+    """
+    Parse GRAMPS XML to extract data needed by the candidate identification page.
+    Returns:
+        person_names:   {handle -> name_str}
+        place_coords:   {place_name -> (lat, lon)}
+        witness_per_ev: {event_handle -> [name_str, ...]}
+        fam_mar_ev:     {family_id -> marriage_event_handle}
+    """
+    if content_bytes.startswith(b'\xef\xbb\xbf'):
+        content_bytes = content_bytes[3:]
+    content_bytes = content_bytes.lstrip()
+    try:
+        root = ET.fromstring(content_bytes)
+    except Exception:
+        return {}, {}, {}, {}
+
+    MARRIAGE_TYPES = {'marriage', 'matrimonio', 'casamiento', 'married'}
+
+    # Places
+    place_coords = {}
+    for pl in root.iter():
+        if strip_ns(pl.tag).lower() != 'placeobj':
+            continue
+        pname = plat = plon = None
+        for c in pl:
+            ct = strip_ns(c.tag).lower()
+            if ct in ('pname', 'ptitle', 'title', 'name'):
+                pname = c.get('value') or (c.text.strip() if c.text else None)
+            elif ct == 'coord':
+                try:
+                    plat = float(c.get('lat') or '')
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    plon = float(c.get('long') or c.get('lon') or '')
+                except (TypeError, ValueError):
+                    pass
+        if pname and plat is not None and plon is not None:
+            place_coords[pname] = (plat, plon)
+
+    # Notes
+    notes = {}
+    for note in root.iter():
+        if strip_ns(note.tag).lower() != 'note':
+            continue
+        nh = note.get('handle') or note.get('id')
+        if not nh:
+            continue
+        txt = ''
+        for c in note.iter():
+            if strip_ns(c.tag).lower() == 'text' and c.text:
+                txt = c.text.strip()
+                break
+        if not txt and note.text:
+            txt = note.text.strip()
+        notes[nh] = txt
+
+    # Events: type + attribute/note witnesses
+    ev_types = {}
+    ev_attr_witnesses = defaultdict(list)
+    for ev in root.iter():
+        if strip_ns(ev.tag).lower() != 'event':
+            continue
+        eh = ev.get('handle') or ev.get('id')
+        if not eh:
+            continue
+        ev_type = ''
+        for c in ev:
+            ct = strip_ns(c.tag).lower()
+            if ct == 'type':
+                ev_type = (c.text or '').strip().lower()
+            elif ct == 'attribute':
+                at = (c.get('type') or '').lower()
+                if 'witness' in at or 'testigo' in at:
+                    v = (c.get('value') or '').strip()
+                    if v:
+                        ev_attr_witnesses[eh].append(v)
+            elif ct == 'noteref':
+                nh = c.get('hlink') or c.get('handle')
+                if nh and nh in notes:
+                    for pat in [r'testigos?:\s*([^\n;]+)', r'witnesses?:\s*([^\n;]+)']:
+                        for m in re.finditer(pat, notes[nh], re.IGNORECASE):
+                            for part in re.split(r'[,;]', m.group(1)):
+                                part = part.strip()
+                                if part:
+                                    ev_attr_witnesses[eh].append(part)
+        ev_types[eh] = ev_type
+
+    # Persons: names (first pass) and witness eventrefs (second pass)
+    person_names = {}
+    person_witness_evs = defaultdict(list)  # {handle -> [event_handle]}
+    for p in root.iter():
+        if strip_ns(p.tag).lower() != 'person':
+            continue
+        ph = p.get('handle')
+        if not ph:
+            continue
+        pname = ''
+        for c in p:
+            ct = strip_ns(c.tag).lower()
+            if ct == 'name':
+                first = sur = ''
+                for nc in c:
+                    nt = strip_ns(nc.tag).lower()
+                    if nt in ('first', 'firstname'):
+                        first = (nc.text or '').strip()
+                    elif nt in ('surname', 'last', 'lastname'):
+                        sur = (nc.text or '').strip()
+                pname = f"{first} {sur}".strip()
+                if not pname and c.text:
+                    pname = c.text.strip()
+            elif ct == 'eventref':
+                role = (c.get('role') or '').lower()
+                eh = c.get('hlink') or c.get('handle') or ''
+                if eh and ('witness' in role or 'testigo' in role):
+                    person_witness_evs[ph].append(eh)
+        if pname:
+            person_names[ph] = pname
+
+    witness_per_ev = defaultdict(list)
+    for ph, ev_list in person_witness_evs.items():
+        pname = person_names.get(ph, '')
+        if not pname:
+            continue
+        for eh in ev_list:
+            witness_per_ev[eh].append(pname)
+    for eh, names in ev_attr_witnesses.items():
+        witness_per_ev[eh].extend(names)
+    witness_per_ev = dict(witness_per_ev)
+
+    # Family → marriage event handle
+    fam_mar_ev = {}
+    for f in root.iter():
+        if strip_ns(f.tag).lower() != 'family':
+            continue
+        fid = f.get('id') or f.get('handle')
+        if not fid:
+            continue
+        for c in f:
+            if strip_ns(c.tag).lower() == 'eventref':
+                eh = c.get('hlink') or c.get('handle') or ''
+                if eh and ev_types.get(eh, '') in MARRIAGE_TYPES:
+                    fam_mar_ev[fid] = eh
+                    break
+
+    return person_names, place_coords, witness_per_ev, fam_mar_ev
+
+
+def _compute_typical_marriage_age(people_ext, families_ext, target_year, target_lat, target_lon):
+    """Compute typical marriage age from GRAMPS tree data near target_year/location.
+    Returns {sex: (mean, std, n, window_yrs_used)} for 'M' and 'F'."""
+    defaults = {"M": (26.0, 6.0, 0, None), "F": (22.0, 5.0, 0, None)}
+    if not families_ext or not people_ext or not target_year:
+        return defaults
+
+    for window_yrs in [30, 60, 120]:
+        ages_m, ages_f = [], []
+        for fam in families_ext.values():
+            my = fam.get("marriage_year")
+            if not my or abs(my - target_year) > window_yrs:
+                continue
+            for sex, pid_key in [("M", "husband"), ("F", "wife")]:
+                pid = fam.get(pid_key)
+                if not pid:
+                    continue
+                person = people_ext.get(pid, {})
+                by = person.get("birth_year") or person.get("baptism_year")
+                if not by:
+                    continue
+                age = my - by
+                if 10 <= age <= 70:
+                    (ages_m if sex == "M" else ages_f).append(age)
+
+        result = {}
+        for sex, ages in [("M", ages_m), ("F", ages_f)]:
+            if len(ages) >= 5:
+                mean_a = statistics.mean(ages)
+                std_a = statistics.stdev(ages) if len(ages) > 1 else 5.0
+                result[sex] = (mean_a, std_a, len(ages), window_yrs)
+            else:
+                result[sex] = defaults[sex]
+
+        if result.get("M", (0, 0, 0, None))[2] >= 5 or result.get("F", (0, 0, 0, None))[2] >= 5:
+            for sex in ("M", "F"):
+                if sex not in result:
+                    result[sex] = defaults[sex]
+            return result
+
+    return defaults
+
+
+_HYPERFREQUENT_ES = frozenset({
+    'garcia', 'lopez', 'martinez', 'fernandez', 'gonzalez', 'rodriguez',
+    'sanchez', 'perez', 'gomez', 'martin', 'jimenez', 'ruiz', 'hernandez',
+    'diaz', 'moreno', 'alvarez', 'munoz', 'romero', 'molina', 'gutierrez',
+    'torres', 'ramirez', 'nunez', 'marin', 'castro', 'medina', 'vega',
+    'blanco', 'delgado', 'ramos', 'vargas', 'serrano', 'alonso', 'navarro',
+    'silva', 'costa', 'santos', 'sousa', 'ferreira', 'pinto', 'carvalho',
+    'lopes', 'ribeiro', 'alves', 'gomes', 'pereira', 'nunes',
+})
+_SURNAME_PARTICLES = frozenset({'de', 'del', 'la', 'los', 'las', 'y', 'e', 'i'})
+
+
+def _extract_name_parts(norm_name):
+    """Return (given_tokens, surname_tokens) from a normalized name string."""
+    parts = [p for p in norm_name.split() if p]
+    non_particle = [p for p in parts if p not in _SURNAME_PARTICLES]
+    if len(non_particle) <= 1:
+        return non_particle, []
+    return [non_particle[0]], [p for p in non_particle[1:] if p not in _SURNAME_PARTICLES]
+
+
+def _surname_rarity(surname_tokens, context_names):
+    """Estimate surname rarity in [0.15, 0.9]; 0.9 = very rare, 0.15 = hyperfrequent.
+
+    Requires at least 10 distinct context names to estimate frequency; otherwise
+    returns 0.7 (moderately rare) to avoid false positives from small pools.
+    """
+    if not surname_tokens:
+        return 0.0
+    for tok in surname_tokens:
+        if tok in _HYPERFREQUENT_ES:
+            return 0.15
+    if not context_names or len(context_names) < 10:
+        return 0.7
+    all_surn = []
+    for name in context_names:
+        _, st = _extract_name_parts(_norm_name(name))
+        all_surn.extend(st)
+    total = len(all_surn) or 1
+    freq = sum(all_surn.count(tok) for tok in surname_tokens) / total
+    return max(0.15, min(0.9, 0.9 - freq * 7.5))
+
+
+def _fuzzy_overlap(list_a, list_b, threshold=80):
+    """Fuzzy witness overlap with full-name and surname-only matching.
+
+    Returns (overlap_coefficient_or_None, [match_dict, ...]) where each
+    match_dict has keys: a, b, score, type ('full'|'surname'), rarity.
+    """
+    if not list_a or not list_b:
+        return None, []
+    norm_a = [(_norm_name(n), n) for n in list_a if n.strip()]
+    norm_b = [(_norm_name(n), n) for n in list_b if n.strip()]
+    if not norm_a or not norm_b:
+        return None, []
+
+    # Phase 1: full-name fuzzy matching
+    matches, used_b = [], set()
+    for na_n, na_o in norm_a:
+        best_s, best_i = 0, -1
+        for ib, (nb_n, _) in enumerate(norm_b):
+            if ib in used_b:
+                continue
+            s = _rfuzz.token_sort_ratio(na_n, nb_n) if _CAND_HAS_RF else (100 if na_n == nb_n else 0)
+            if s > best_s:
+                best_s, best_i = s, ib
+        if best_i >= 0 and best_s >= threshold:
+            matches.append({"a": na_o, "b": norm_b[best_i][1], "score": best_s,
+                            "type": "full", "rarity": 1.0})
+            used_b.add(best_i)
+
+    # Phase 2: surname-only matching for unmatched pairs
+    context_names = [na_o for _, na_o in norm_a] + [nb_o for _, nb_o in norm_b]
+    matched_a_idx = {i for i, (na_n, _) in enumerate(norm_a)
+                     if any(m["a"] == na_n or m["a"] == norm_a[i][1] for m in matches)}
+    # Rebuild unmatched indices correctly
+    matched_a_names = {m["a"] for m in matches}
+    unmatched_a = [(i, na_n, na_o) for i, (na_n, na_o) in enumerate(norm_a)
+                   if na_o not in matched_a_names]
+    unmatched_b = [(ib, nb_n, nb_o) for ib, (nb_n, nb_o) in enumerate(norm_b)
+                   if ib not in used_b]
+
+    surn_used_b = set()
+    for _, na_n, na_o in unmatched_a:
+        _, na_surn = _extract_name_parts(na_n)
+        if not na_surn:
+            continue
+        best_rarity, best_ib, best_nb_o = 0.0, -1, ""
+        for ib, nb_n, nb_o in unmatched_b:
+            if ib in surn_used_b:
+                continue
+            _, nb_surn = _extract_name_parts(nb_n)
+            if not nb_surn:
+                continue
+            # Check if any surname token fuzzy-matches
+            hit = False
+            for sa in na_surn:
+                for sb in nb_surn:
+                    s = (_rfuzz.token_sort_ratio(sa, sb) if _CAND_HAS_RF
+                         else (100 if sa == sb else 0))
+                    if s >= max(threshold, 85):
+                        hit = True
+                        break
+                if hit:
+                    break
+            if not hit:
+                continue
+            rarity = _surname_rarity(na_surn, context_names)
+            if rarity > best_rarity:
+                best_rarity, best_ib, best_nb_o = rarity, ib, nb_o
+        if best_ib >= 0:
+            matches.append({"a": na_o, "b": best_nb_o, "score": best_rarity * 100,
+                            "type": "surname", "rarity": best_rarity})
+            surn_used_b.add(best_ib)
+
+    # Overlap coefficient: full match = 1.0, surname match = rarity * 0.45
+    n_min = min(len(norm_a), len(norm_b))
+    if n_min == 0:
+        return 0.0, matches
+    weighted = sum(1.0 if m["type"] == "full" else m["rarity"] * 0.45 for m in matches)
+    return min(1.0, weighted / n_min), matches
+
+
+def _lookup_coords(place_query, place_coords, threshold=75):
+    """Fuzzy lookup of a manually entered place name against known GRAMPS places."""
+    if not place_query or not place_coords:
+        return None, None
+    q = _norm_name(place_query)
+    best_s, best_c = 0, (None, None)
+    for name, coords in place_coords.items():
+        s = _rfuzz.token_sort_ratio(q, _norm_name(name)) if _CAND_HAS_RF else (100 if q == _norm_name(name) else 0)
+        if s > best_s:
+            best_s, best_c = s, coords
+    return best_c if best_s >= threshold else (None, None)
+
+
+def _score_candidate(target_witnesses, cand, typical_age, target_year,
+                     target_lat, target_lon, place_coords, config):
+    """Score a candidate against target marriage witnesses. Returns a result dict."""
+    fuzzy_thr = config.get("fuzzy_thr", 80)
+    geo_scale = config.get("geo_scale", 30.0)
+    use_sib_mar = config.get("use_sib_mar", True)
+    use_surnames = config.get("use_surnames", False)
+    weights = config.get("weights", {"f1": 35, "f2": 20, "f3": 15, "f4": 15, "f5": 10, "f6": 5})
+
+    res = {
+        "name": cand.get("name", "?"),
+        "f1_score": None, "f1_matches": [], "f1_nonmatches": [],
+        "f2_score": None, "f2_matches": [],
+        "f3_score": None, "f3_matches": [],
+        "f4_score": None,
+        "f5_score": None,
+        "f6_score": None,
+        "prob": 0.5,
+        "main_factor": None,
+        "_cand": cand,
+    }
+
+    # F1: own baptism witnesses
+    f1, f1m = _fuzzy_overlap(target_witnesses, cand.get("bap_witnesses", []), fuzzy_thr)
+    res["f1_score"], res["f1_matches"] = f1, f1m
+    if f1 is not None:
+        matched_tw = {m["a"] for m in f1m}
+        res["f1_nonmatches"] = [w for w in target_witnesses if w not in matched_tw]
+
+    # F2: siblings' baptism witnesses (union of all siblings)
+    sib_bap_w = []
+    for sib in cand.get("siblings", []):
+        sib_bap_w.extend(sib.get("bap_witnesses", []))
+    f2, f2m = _fuzzy_overlap(target_witnesses, sib_bap_w, fuzzy_thr)
+    res["f2_score"], res["f2_matches"] = f2, f2m
+
+    # F3: siblings' marriage witnesses
+    if use_sib_mar:
+        sib_mar_w = []
+        for sib in cand.get("siblings", []):
+            sib_mar_w.extend(sib.get("mar_witnesses", []))
+        f3, f3m = _fuzzy_overlap(target_witnesses, sib_mar_w, fuzzy_thr)
+        res["f3_score"], res["f3_matches"] = f3, f3m
+
+    # F4: temporal coherence (Gaussian score centred on expected birth year)
+    bap_yr = cand.get("bap_year")
+    if bap_yr and target_year:
+        sex = cand.get("sex", "M")
+        mean_a, std_a, _, _ = typical_age.get(sex, (26.0, 6.0, 0, None))
+        z = (bap_yr - (target_year - mean_a)) / max(std_a, 1.0)
+        res["f4_score"] = math.exp(-0.5 * z * z)
+
+    # F5: geographic coherence (exponential distance decay)
+    clat, clon = _lookup_coords(cand.get("bap_place", ""), place_coords)
+    if clat is not None and target_lat is not None:
+        dist = _haversine_km(target_lat, target_lon, clat, clon)
+        res["f5_score"] = math.exp(-dist / max(geo_scale, 1.0))
+
+    # F6: candidate surname appears in target witnesses
+    if use_surnames:
+        name_parts = _norm_name(cand.get("name", "")).split()
+        if len(name_parts) >= 2:
+            cand_surnames = name_parts[1:]
+            hits = 0
+            for tw in target_witnesses:
+                tw_n = _norm_name(tw)
+                for s in cand_surnames:
+                    hit = (_CAND_HAS_RF and _rfuzz.partial_ratio(s, tw_n) >= 85) or s in tw_n
+                    if hit:
+                        hits += 1
+                        break
+            if target_witnesses:
+                res["f6_score"] = hits / len(target_witnesses)
+
+    # Bayesian combination: product of likelihood ratios (prior applied by _apply_prior)
+    factor_keys = ["f1", "f2", "f3", "f4", "f5", "f6"]
+    scores_map = {k: res[f"{k}_score"] for k in factor_keys}
+    active = [(k, weights.get(k, 0)) for k in factor_keys if scores_map[k] is not None]
+    if not active:
+        return res
+
+    total_w = sum(w for _, w in active) or 1
+    sensitivity = 4.0
+    posterior_odds, best_dev, best_factor = 1.0, 0.0, None
+    for fname, w in active:
+        eff_w = w / total_w
+        lr = math.exp(sensitivity * eff_w * (scores_map[fname] - 0.5))
+        posterior_odds *= lr
+        if abs(lr - 1.0) > best_dev:
+            best_dev, best_factor = abs(lr - 1.0), fname
+
+    res["prob"] = posterior_odds / (1.0 + posterior_odds)
+    res["main_factor"] = best_factor
+    return res
+
+
+def _apply_prior(results):
+    """Adjust raw Bayes scores with a uniform prior over n candidates."""
+    n = len(results)
+    if n <= 1:
+        return results
+    prior_odds = (1.0 / n) / (1.0 - 1.0 / n)
+    for res in results:
+        raw_odds = max(1e-9, res["prob"]) / max(1e-9, 1.0 - res["prob"])
+        adj_odds = raw_odds * prior_odds
+        res["prob"] = min(0.999, max(0.001, adj_odds / (1.0 + adj_odds)))
+    return results
+
+
+def _generate_narrative(all_results, target_info, typical_age_info, n_cands):
+    """Generate a natural language summary of the identification results."""
+    lines = []
+    tw = target_info.get("witnesses", [])
+    witnesses_str = ", ".join(f"*{w}*" for w in tw) if tw else "—"
+    lines.append(t("gen_cand_narr_intro",
+                   place=target_info.get("place") or "—",
+                   year=target_info.get("year") or "—",
+                   witnesses=witnesses_str,
+                   n=n_cands))
+    lines.append("")
+
+    age_m = typical_age_info.get("M", (26.0, 6.0, 0, None))
+    age_f = typical_age_info.get("F", (22.0, 5.0, 0, None))
+    target_year = target_info.get("year")
+    if age_m[2] >= 5 and age_f[2] >= 5 and target_year:
+        y_min = int(target_year - age_m[0] - age_m[1])
+        y_max = int(target_year - age_f[0] + age_f[1])
+        lines.append(t("gen_cand_narr_age",
+                       mean_m=age_m[0], mean_f=age_f[0],
+                       n_m=age_m[2], n_f=age_f[2],
+                       y_min=y_min, y_max=y_max))
+    else:
+        lines.append(t("gen_cand_narr_age_default"))
+    lines.append("")
+
+    for res in all_results:
+        cand = res.get("_cand", {})
+        cand_name = res.get("name", "?")
+        bap_yr = cand.get("bap_year")
+        bap_pl = cand.get("bap_place", "")
+        bap_yr_str = str(bap_yr) if bap_yr else t("gen_cand_bap_year_unknown")
+        bap_pl_str = bap_pl if bap_pl else t("gen_cand_bap_place_unknown")
+
+        intro = t("gen_cand_narr_candidate_intro",
+                  name=cand_name, bap_year_str=bap_yr_str, bap_place_str=bap_pl_str)
+
+        f1m = res.get("f1_matches", [])
+        if res.get("f1_score") is None:
+            witness_part = t("gen_cand_narr_witnesses_no_data")
+        elif f1m:
+            mn = ", ".join(f"*{m['b']}*" for m in f1m[:3])
+            if len(f1m) > 3:
+                mn += f" (+{len(f1m) - 3})"
+            witness_part = t("gen_cand_narr_witnesses_found", n=len(f1m), witness_list=mn)
+        else:
+            witness_part = t("gen_cand_narr_witnesses_none")
+
+        f4 = res.get("f4_score")
+        if f4 is None or not target_year:
+            temporal_part = t("gen_cand_narr_temporal_nodata")
+        else:
+            sex = cand.get("sex", "M")
+            ai = typical_age_info.get(sex, (26.0, 6.0, 0, None))
+            exp_yr = target_year - ai[0]
+            y_lo, y_hi = int(exp_yr - ai[1] * 1.5), int(exp_yr + ai[1] * 1.5)
+            if bap_yr and y_lo <= bap_yr <= y_hi:
+                temporal_part = t("gen_cand_narr_temporal_ok", year=bap_yr)
+            elif bap_yr:
+                temporal_part = t("gen_cand_narr_temporal_out",
+                                  year=bap_yr, y_min=y_lo, y_max=y_hi)
+            else:
+                temporal_part = t("gen_cand_narr_temporal_nodata")
+
+        para = f"{intro}{witness_part}; {temporal_part}."
+
+        sibs = cand.get("siblings", [])
+        sib_parts = []
+        for sib in sibs:
+            sib_n = sib.get("name", "?")
+            for sib_w_list, match_key, no_match_key in [
+                (sib.get("bap_witnesses", []), "gen_cand_narr_sib_bap_match", "gen_cand_narr_sib_bap_no_match"),
+                (sib.get("mar_witnesses", []), "gen_cand_narr_sib_mar_match", "gen_cand_narr_sib_mar_no_match"),
+            ]:
+                if sib_w_list:
+                    _, ms = _fuzzy_overlap(tw, sib_w_list, 80)
+                    if ms:
+                        sib_parts.append(t(match_key, name=sib_n, n_match=len(ms)))
+                    else:
+                        sib_parts.append(t(no_match_key, name=sib_n))
+        if sib_parts:
+            para += " " + t("gen_cand_narr_siblings", sibling_list="; ".join(sib_parts))
+
+        prob = res.get("prob", 0.5)
+        conf = (t("gen_cand_conf_high") if prob >= 0.70
+                else t("gen_cand_conf_medium") if prob >= 0.40
+                else t("gen_cand_conf_low"))
+        para += " " + t("gen_cand_narr_prob", prob=prob, conf=conf)
+        lines.append(para)
+        lines.append("")
+
+    sorted_r = sorted(all_results, key=lambda r: r.get("prob", 0), reverse=True)
+    if not sorted_r:
+        pass
+    elif len(sorted_r) == 1:
+        r = sorted_r[0]
+        lines.append(t("gen_cand_narr_conclusion_one", name=r["name"], prob=r.get("prob", 0.5)))
+    else:
+        top, second = sorted_r[0], sorted_r[1]
+        p_diff = top.get("prob", 0) - second.get("prob", 0)
+        mf = top.get("main_factor")
+        factor_label = t(f"gen_cand_narr_factor_{mf}") if mf else "—"
+        if p_diff < 0.10:
+            lines.append(t("gen_cand_narr_conclusion_tie",
+                           c1=top["name"], c2=second["name"],
+                           p1=top.get("prob", 0), p2=second.get("prob", 0)))
+        else:
+            lines.append(t("gen_cand_narr_conclusion_single",
+                           winner=top["name"], prob=top.get("prob", 0),
+                           main_factor=factor_label))
+
+    return "\n".join(lines)
+
+
+# ── Candidate state callbacks ────────────────────────────────────────────────
+
+def _cand_add_candidate():
+    new_id = str(_uuid_lib.uuid4())[:8]
+    st.session_state.setdefault("cand_ids", []).append(new_id)
+    st.session_state[f"cand_{new_id}_sib_ids"] = []
+
+
+def _cand_remove_candidate(cid):
+    ids = st.session_state.get("cand_ids", [])
+    if cid in ids:
+        ids.remove(cid)
+
+
+def _cand_add_sibling(cid):
+    sid = str(_uuid_lib.uuid4())[:8]
+    st.session_state.setdefault(f"cand_{cid}_sib_ids", []).append(sid)
+
+
+def _cand_remove_sibling(cid, sid):
+    sibs = st.session_state.get(f"cand_{cid}_sib_ids", [])
+    if sid in sibs:
+        sibs.remove(sid)
+
+
+def _read_candidate_data(cid):
+    """Read all form widget values for a candidate from session_state."""
+    name = st.session_state.get(f"cand_{cid}_name", "")
+    bap_year = None
+    try:
+        s = str(st.session_state.get(f"cand_{cid}_bap_year", "") or "").strip()
+        if s:
+            bap_year = int(s)
+    except ValueError:
+        pass
+    bap_place = st.session_state.get(f"cand_{cid}_bap_place", "")
+    bap_witnesses = [w.strip() for w in
+                     (st.session_state.get(f"cand_{cid}_bap_wit", "") or "").splitlines()
+                     if w.strip()]
+    siblings = []
+    for sid in st.session_state.get(f"cand_{cid}_sib_ids", []):
+        sb_yr = None
+        try:
+            s = str(st.session_state.get(f"cand_{cid}_{sid}_bap_yr", "") or "").strip()
+            if s:
+                sb_yr = int(s)
+        except ValueError:
+            pass
+        sm_yr = None
+        try:
+            s = str(st.session_state.get(f"cand_{cid}_{sid}_mar_yr", "") or "").strip()
+            if s:
+                sm_yr = int(s)
+        except ValueError:
+            pass
+        siblings.append({
+            "name": st.session_state.get(f"cand_{cid}_{sid}_name", ""),
+            "bap_year": sb_yr,
+            "bap_place": st.session_state.get(f"cand_{cid}_{sid}_bap_pl", ""),
+            "bap_witnesses": [w.strip() for w in
+                              (st.session_state.get(f"cand_{cid}_{sid}_bap_wit", "") or "").splitlines()
+                              if w.strip()],
+            "mar_year": sm_yr,
+            "mar_place": st.session_state.get(f"cand_{cid}_{sid}_mar_pl", ""),
+            "mar_witnesses": [w.strip() for w in
+                              (st.session_state.get(f"cand_{cid}_{sid}_mar_wit", "") or "").splitlines()
+                              if w.strip()],
+        })
+    return {
+        "id": cid,
+        "name": name,
+        "bap_year": bap_year,
+        "bap_place": bap_place,
+        "bap_witnesses": bap_witnesses,
+        "siblings": siblings,
+        "sex": "M",
+    }
+
+
+# ============================================================
+# Sub-página: Identificación de candidatos
+# ============================================================
+
+def page_identificacion_candidatos(content_bytes):
+    st.title(t("gen_cand_title"))
+    st.caption(t("gen_cand_caption"))
+
+    # ── Cache parse (re-runs are fast; full parse only on file change) ────────
+    content_hash = hash(content_bytes if isinstance(content_bytes, bytes) else bytes(content_bytes))
+    if st.session_state.get("_cand_phash") != content_hash:
+        people_ext, families_ext = parse_gramps_extended(content_bytes)
+        _, place_coords, witness_per_ev, fam_mar_ev = _parse_cand_extra(content_bytes)
+        st.session_state.update({
+            "_cand_phash": content_hash,
+            "_cand_people": people_ext,
+            "_cand_families": families_ext,
+            "_cand_place_coords": place_coords,
+            "_cand_wit_ev": witness_per_ev,
+            "_cand_fam_mar": fam_mar_ev,
+        })
+
+    people_ext = st.session_state["_cand_people"]
+    families_ext = st.session_state["_cand_families"]
+    place_coords = st.session_state["_cand_place_coords"]
+    witness_per_ev = st.session_state["_cand_wit_ev"]
+    fam_mar_ev = st.session_state["_cand_fam_mar"]
+
+    # ── Section 1: Target marriage ───────────────────────────────────────────
+    st.markdown(t("gen_cand_target_header"))
+    st.caption(t("gen_cand_target_help"))
+
+    fam_options = {}
+    for fid, fam in families_ext.items():
+        my = fam.get("marriage_year") or "?"
+        mp = fam.get("marriage_place") or "—"
+        hn = people_ext.get(fam.get("husband") or "", {}).get("name", "—")
+        wn = people_ext.get(fam.get("wife") or "", {}).get("name", "—")
+        fam_options[fid] = f"{hn} & {wn} ({my}, {mp})"
+
+    if not fam_options:
+        st.warning(t("gen_cand_no_marriages"))
+        return
+
+    sorted_fids = sorted(fam_options.keys(),
+                         key=lambda f: families_ext[f].get("marriage_year") or 9999)
+
+    selected_fid = st.selectbox(
+        t("gen_cand_select_marriage"),
+        options=sorted_fids,
+        format_func=lambda f: fam_options[f],
+        key="cand_target_fid",
+    )
+
+    target_witnesses, target_year, target_place = [], None, None
+    target_lat = target_lon = None
+
+    if selected_fid:
+        fam = families_ext[selected_fid]
+        target_year = fam.get("marriage_year")
+        target_place = fam.get("marriage_place", "")
+        mar_ev_h = fam_mar_ev.get(selected_fid)
+        if mar_ev_h:
+            target_witnesses = witness_per_ev.get(mar_ev_h, [])
+        if target_place:
+            if target_place in place_coords:
+                target_lat, target_lon = place_coords[target_place]
+            else:
+                target_lat, target_lon = _lookup_coords(target_place, place_coords)
+
+        if target_witnesses:
+            st.success(f"**{t('gen_cand_witnesses_label')}** {', '.join(target_witnesses)}")
+        else:
+            st.info(t("gen_cand_no_witnesses"))
+
+    # Typical marriage age from tree
+    typical_age = {"M": (26.0, 6.0, 0, None), "F": (22.0, 5.0, 0, None)}
+    if target_year:
+        typical_age = _compute_typical_marriage_age(
+            people_ext, families_ext, target_year, target_lat, target_lon
+        )
+
+    with st.expander(t("gen_cand_typical_age_header"), expanded=False):
+        for sex, fmt_key, def_key in [
+            ("M", "gen_cand_typical_age_male_fmt", "gen_cand_typical_age_default_m"),
+            ("F", "gen_cand_typical_age_female_fmt", "gen_cand_typical_age_default_f"),
+        ]:
+            mean_a, std_a, n_s, window = typical_age[sex]
+            if n_s >= 5:
+                st.write(t(fmt_key, mean=mean_a, std=std_a, n=n_s))
+                if window and window > 30:
+                    st.caption(t("gen_cand_typical_age_expanded_window", yrs=window))
+            else:
+                st.caption(t(def_key))
+
+    st.markdown("---")
+
+    # ── Section 2: Candidates ────────────────────────────────────────────────
+    st.markdown(t("gen_cand_candidates_header"))
+    st.caption(t("gen_cand_candidates_help"))
+
+    st.session_state.setdefault("cand_ids", [])
+    cand_ids = st.session_state["cand_ids"]
+
+    col_add, _ = st.columns([1, 5])
+    with col_add:
+        if len(cand_ids) < 6:
+            st.button(t("gen_cand_add_btn"), key="cand_add_btn",
+                      on_click=_cand_add_candidate)
+        else:
+            st.warning(t("gen_cand_max_reached"))
+
+    for idx, cid in enumerate(list(cand_ids)):
+        name_preview = st.session_state.get(f"cand_{cid}_name", "")
+        exp_label = (t("gen_cand_candidate_label", n=idx + 1, name=name_preview)
+                     if name_preview
+                     else t("gen_cand_candidate_label_empty", n=idx + 1))
+
+        with st.expander(exp_label, expanded=True):
+            c_name_col, c_rm_col = st.columns([5, 1])
+            with c_name_col:
+                st.text_input(t("gen_cand_name"), key=f"cand_{cid}_name")
+            with c_rm_col:
+                st.write("")
+                st.button(t("gen_cand_remove_btn"), key=f"rm_{cid}",
+                          on_click=_cand_remove_candidate, args=(cid,))
+
+            yr_col, pl_col = st.columns(2)
+            with yr_col:
+                st.text_input(t("gen_cand_baptism_year"), key=f"cand_{cid}_bap_year",
+                              placeholder="ej. 1543")
+            with pl_col:
+                st.text_input(t("gen_cand_baptism_place"), key=f"cand_{cid}_bap_place")
+
+            st.text_area(t("gen_cand_baptism_witnesses"), key=f"cand_{cid}_bap_wit",
+                         height=100, help=t("gen_cand_baptism_witnesses_help"))
+
+            # Siblings section
+            st.markdown(t("gen_cand_siblings_header"))
+            sib_ids = st.session_state.get(f"cand_{cid}_sib_ids", [])
+
+            for sidx, sid in enumerate(list(sib_ids)):
+                sib_name_prev = st.session_state.get(f"cand_{cid}_{sid}_name", "")
+                sib_label = (t("gen_cand_sibling_label", n=sidx + 1, name=sib_name_prev)
+                             if sib_name_prev
+                             else t("gen_cand_sibling_label_empty", n=sidx + 1))
+                st.markdown(f"**{sib_label}**")
+                s1, s2, s3, s4 = st.columns([3, 1, 1, 1])
+                with s1:
+                    st.text_input(t("gen_cand_sib_name"), key=f"cand_{cid}_{sid}_name")
+                with s2:
+                    st.text_input(t("gen_cand_sib_bap_year"),
+                                  key=f"cand_{cid}_{sid}_bap_yr", placeholder="ej. 1545")
+                with s3:
+                    st.text_input(t("gen_cand_sib_bap_place"),
+                                  key=f"cand_{cid}_{sid}_bap_pl")
+                with s4:
+                    st.write("")
+                    st.button(t("gen_cand_remove_sibling_btn"),
+                              key=f"rm_sib_{cid}_{sid}",
+                              on_click=_cand_remove_sibling, args=(cid, sid))
+                st.text_area(t("gen_cand_sib_bap_witnesses"),
+                             key=f"cand_{cid}_{sid}_bap_wit", height=75)
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.text_input(t("gen_cand_sib_mar_year"),
+                                  key=f"cand_{cid}_{sid}_mar_yr", placeholder="ej. 1569")
+                with m2:
+                    st.text_input(t("gen_cand_sib_mar_place"),
+                                  key=f"cand_{cid}_{sid}_mar_pl")
+                st.text_area(t("gen_cand_sib_mar_witnesses"),
+                             key=f"cand_{cid}_{sid}_mar_wit", height=75)
+                st.markdown("---")
+
+            st.button(t("gen_cand_add_sibling_btn"), key=f"add_sib_{cid}",
+                      on_click=_cand_add_sibling, args=(cid,))
+
+    st.markdown("---")
+
+    # ── Config (collapsed by default) ────────────────────────────────────────
+    with st.expander(t("gen_cand_config_header"), expanded=False):
+        st.caption(t("gen_cand_weights_note"))
+        fuzzy_thr = st.slider(t("gen_cand_fuzzy_label"), 60, 100, 80, key="cand_fuzzy_thr")
+        geo_scale = st.slider(t("gen_cand_geo_scale_label"), 5, 200, 30, key="cand_geo_scale")
+        use_sib_mar = st.checkbox(t("gen_cand_use_sib_mar"), value=True, key="cand_use_sib_mar")
+        use_surnames = st.checkbox(t("gen_cand_use_surnames"), value=False, key="cand_use_surnames")
+        wc1, wc2, wc3 = st.columns(3)
+        with wc1:
+            w_f1 = st.slider(t("gen_cand_weight_f1"), 0, 100, 35, key="cand_w_f1")
+            w_f2 = st.slider(t("gen_cand_weight_f2"), 0, 100, 20, key="cand_w_f2")
+        with wc2:
+            w_f3 = st.slider(t("gen_cand_weight_f3"), 0, 100, 15, key="cand_w_f3")
+            w_f4 = st.slider(t("gen_cand_weight_f4"), 0, 100, 15, key="cand_w_f4")
+        with wc3:
+            w_f5 = st.slider(t("gen_cand_weight_f5"), 0, 100, 10, key="cand_w_f5")
+            w_f6 = st.slider(t("gen_cand_weight_f6"), 0, 100, 5, key="cand_w_f6")
+
+    config = {
+        "fuzzy_thr": st.session_state.get("cand_fuzzy_thr", 80),
+        "geo_scale": float(st.session_state.get("cand_geo_scale", 30)),
+        "use_sib_mar": st.session_state.get("cand_use_sib_mar", True),
+        "use_surnames": st.session_state.get("cand_use_surnames", False),
+        "weights": {
+            "f1": st.session_state.get("cand_w_f1", 35),
+            "f2": st.session_state.get("cand_w_f2", 20),
+            "f3": st.session_state.get("cand_w_f3", 15),
+            "f4": st.session_state.get("cand_w_f4", 15),
+            "f5": st.session_state.get("cand_w_f5", 10),
+            "f6": st.session_state.get("cand_w_f6", 5),
+        },
+    }
+
+    # ── Calculate ────────────────────────────────────────────────────────────
+    if st.button(t("gen_cand_calculate_btn"), type="primary", key="cand_calc_btn"):
+        if not cand_ids:
+            st.warning(t("gen_cand_no_candidates"))
+        else:
+            candidates = [_read_candidate_data(cid) for cid in cand_ids]
+            results = [
+                _score_candidate(target_witnesses, cand, typical_age, target_year,
+                                 target_lat, target_lon, place_coords, config)
+                for cand in candidates
+            ]
+            results = _apply_prior(results)
+            results.sort(key=lambda r: r.get("prob", 0), reverse=True)
+            st.session_state["cand_results"] = results
+            st.session_state["cand_target_info"] = {
+                "witnesses": target_witnesses,
+                "year": target_year,
+                "place": target_place,
+            }
+            st.session_state["cand_typical_age"] = typical_age
+
+    # ── Results ──────────────────────────────────────────────────────────────
+    results = st.session_state.get("cand_results")
+    if not results:
+        return
+
+    st.markdown(t("gen_cand_results_header"))
+
+    nd = t("gen_cand_no_data_cell")
+
+    def _fmt(s):
+        return nd if s is None else f"{s:.0%}"
+
+    def _conf(p):
+        return (t("gen_cand_conf_high") if p >= 0.70
+                else t("gen_cand_conf_medium") if p >= 0.40
+                else t("gen_cand_conf_low"))
+
+    rows = []
+    for res in results:
+        p = res.get("prob", 0)
+        rows.append({
+            t("gen_cand_col_candidate"): res["name"],
+            t("gen_cand_col_prob"): f"{p:.0%}  {_conf(p)}",
+            t("gen_cand_col_f1"): _fmt(res.get("f1_score")),
+            t("gen_cand_col_f2"): _fmt(res.get("f2_score")),
+            t("gen_cand_col_f3"): _fmt(res.get("f3_score")),
+            t("gen_cand_col_f4"): _fmt(res.get("f4_score")),
+            t("gen_cand_col_f5"): _fmt(res.get("f5_score")),
+            t("gen_cand_col_f6"): _fmt(res.get("f6_score")),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    for res in results:
+        p = res.get("prob", 0)
+        st.progress(p, text=f"{res['name']}: {p:.0%}  {_conf(p)}")
+
+    for res in results:
+        with st.expander(f"🔍 {res['name']}", expanded=False):
+            for matches, label_suffix in [
+                (res.get("f1_matches", []), "bautismo"),
+                (res.get("f2_matches", []), "bautismos hermanos"),
+                (res.get("f3_matches", []), "matrimonios hermanos"),
+            ]:
+                if matches:
+                    st.markdown(f"**{t('gen_cand_detail_matches')}** ({label_suffix})")
+                    for m in matches:
+                        if m["type"] == "full":
+                            st.write(f"  • {m['a']} ↔ {m['b']} ({m['score']:.0f}%)")
+                        else:
+                            st.write(f"  • {m['a']} ≈ {m['b']} (apellido, rareza {m['rarity']:.0%})")
+
+            no_m = res.get("f1_nonmatches", [])
+            if no_m:
+                st.markdown(f"**{t('gen_cand_detail_nonmatches')}** (bautismo)")
+                st.write("  • " + ", ".join(no_m))
+
+            if not res.get("f1_matches") and res.get("f1_score") is not None:
+                st.info(t("gen_cand_detail_no_matches"))
+
+    st.markdown("---")
+
+    # ── Narrative summary ─────────────────────────────────────────────────────
+    st.markdown(t("gen_cand_narrative_header"))
+    target_info = st.session_state.get("cand_target_info", {})
+    typ_age = st.session_state.get("cand_typical_age", typical_age)
+    narrative = _generate_narrative(results, target_info, typ_age, len(results))
+    st.markdown(narrative)
+
+
+# ============================================================
 # Interfaz pública
 # ============================================================
 
@@ -2277,7 +3245,8 @@ def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.radio(
         t("gen_subpage_selector"),
-        [t("gen_subpage_extremos"), t("gen_subpage_inconsistencias"), t("gen_subpage_contexto")],
+        [t("gen_subpage_extremos"), t("gen_subpage_inconsistencias"),
+         t("gen_subpage_contexto"), t("gen_subpage_candidatos")],
         key='gen_active_subpage_label',
     )
 
@@ -2296,5 +3265,7 @@ def render_page():
         page_inconsistencias(content_bytes)
     elif active == t("gen_subpage_contexto"):
         page_contexto_historico(content_bytes)
+    elif active == t("gen_subpage_candidatos"):
+        page_identificacion_candidatos(content_bytes)
     else:
         page_extremos(content_bytes)

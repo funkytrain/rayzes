@@ -12,7 +12,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
 - [Modules](#modules)
   - [Testigos (Witness & Godparent Analysis)](#testigos-witness--godparent-analysis)
   - [Consanguinidad (Consanguinity & Inbreeding Analysis)](#consanguinidad-consanguinity--inbreeding-analysis)
-  - [General (Tree Endpoints, Inconsistencies & Historical Context)](#general-tree-endpoints-inconsistencies--historical-context)
+  - [General (Tree Endpoints, Inconsistencies, Historical Context & Candidate Identification)](#general-tree-endpoints-inconsistencies-historical-context--candidate-identification)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
 - [Tech Stack](#tech-stack)
@@ -319,9 +319,9 @@ Maps the birthplaces of an individual's ancestors across generations. Color-code
 
 ---
 
-### General (Tree Endpoints, Inconsistencies & Historical Context)
+### General (Tree Endpoints, Inconsistencies, Historical Context & Candidate Identification)
 
-This module provides three analytical sub-pages that work directly from the GRAMPS family tree data, focusing on data quality, temporal extremes, and historical enrichment.
+This module provides four analytical sub-pages that work directly from the GRAMPS family tree data, focusing on data quality, temporal extremes, historical enrichment, and probabilistic identity resolution.
 
 ---
 
@@ -414,6 +414,64 @@ For each historical event, if the individual has a known birth year, the approxi
 The timeline is scoped to a relevant window: it starts **10 years before the individual's birth** (to provide contextual lead-in) and ends at the last recorded personal event. Historical events outside this window are omitted.
 
 The full timeline can be exported to CSV.
+
+---
+
+#### Identificación de candidatos — Candidate Identification
+
+Addresses a common problem in 16th–18th century records: marriages that do not record the parents of the contracting parties. When several individuals share the same name and approximate age, this sub-page provides a systematic, probabilistic framework for ranking them as candidates.
+
+**The core hypothesis**: witnesses tend to repeat across events within the same social and family circle. If a witness at the mystery marriage also appears at the baptism of candidate A (or at the baptism or marriage of A's siblings), that is evidence that A is the individual being sought.
+
+**Candidates are entered manually** — they are not required to be in the GRAMPS tree. For each candidate you can provide:
+
+- Name and surnames
+- Baptism year and place
+- Baptism witnesses (free text, one per line)
+- Any number of siblings, each with:
+  - Name, baptism year, baptism place, and baptism witnesses
+  - Marriage year, marriage place, and marriage witnesses
+
+**Target marriage** is selected directly from the loaded GRAMPS tree. The app automatically extracts the witnesses recorded in the XML for that event.
+
+**Typical marriage age** is computed dynamically from the tree itself — the mean and standard deviation of actual marriage ages for individuals in a matching time window and geographic area around the target event. If the local sample is too small (< 5 individuals), the window expands automatically (±30 → ±60 → ±120 years) with a note in the UI.
+
+**Scoring model — six factors** combined via Bayesian likelihood ratios with a uniform prior over all candidates:
+
+| Factor | Default weight | Description |
+|--------|---------------|-------------|
+| F1 — Own baptism witnesses | 35 % | Witness overlap between target marriage and candidate's own baptism |
+| F2 — Siblings' baptism witnesses | 20 % | Overlap using the union of witnesses from all siblings' baptisms |
+| F3 — Siblings' marriage witnesses | 15 % | Overlap using witnesses from siblings' marriages |
+| F4 — Temporal coherence | 15 % | Gaussian score: how close the baptism year is to the expected year (target year − typical age) |
+| F5 — Geographic coherence | 10 % | Exponential decay on Haversine distance between baptism place and marriage place |
+| F6 — Candidate surname in witnesses | 5 % | Fraction of target witnesses who share a surname with the candidate |
+
+Factors for which no data has been entered score `None` and do not penalise the candidate — their weight is redistributed proportionally among the active factors.
+
+**Witness matching supports two match types**:
+
+- **Full-name match**: fuzzy `token_sort_ratio` ≥ configurable threshold (default 80 %). Contributes 1.0 to the overlap coefficient. Displayed as `A ↔ B (score%)`.
+- **Surname-only match**: triggered when the full-name match fails but the surname tokens match with ratio ≥ 85 %. The contribution is weighted by *surname rarity*:
+  - Hyperfrequent surnames (García, López, Fernández, Pereira, etc.) → rarity **0.15** → contribution ~0.07 (nearly negligible)
+  - Rare surnames with insufficient context (< 10 names in pool) → rarity **0.70** → contribution ~0.32 (moderate evidence — likely a sibling of the original witness)
+  - Context-estimated surnames with a large pool → rarity scales inversely with observed frequency
+  - Displayed as `A ≈ B (apellido, rareza X%)` in the match detail panel
+
+**Configuration panel** (collapsed by default):
+
+- Fuzzy threshold slider (50–100, default 80)
+- Geographic scale slider in km (default 30 km)
+- Per-factor weight sliders (auto-normalised to sum = 1)
+- Toggle: include siblings' marriage witnesses in F3
+- Toggle: enable the surname-in-witnesses factor (F6)
+
+**Results**:
+
+- Sortable results table with per-candidate probability and individual factor scores
+- Visual progress bars coloured green (≥ 70 %), yellow (40–70 %), or red (< 40 %)
+- Expandable detail panel per candidate showing which witnesses matched (full or surname), which did not, and for which events
+- **Narrative summary in natural language** (ES / EN): a coherent, paragraph-form account of the evidence — typical marriage age and expected birth range, per-candidate analysis with matched witnesses, temporal and geographic coherence, and a conclusion naming the most probable candidate or flagging a tie when two candidates are within 10 percentage points of each other
 
 ---
 
