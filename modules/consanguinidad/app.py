@@ -825,7 +825,7 @@ def find_consanguineous_couples(G, families, cacheF, max_gen=12, min_phi_thresho
 
         h = fdata.get('husband')
         w = fdata.get('wife')
-        if not h or not w:
+        if not h or not w or h == w:
             continue
         if h not in G.nodes() or w not in G.nodes():
             continue
