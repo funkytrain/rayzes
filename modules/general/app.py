@@ -16,6 +16,8 @@ from pathlib import Path
 from io import StringIO
 
 from translations import t, get_lang
+from modules.shared.utils import strip_ns, safe_year as safe_int_year, haversine_km as _haversine_km, normalize_name as _norm_name
+from modules.shared.gramps_parser import parse_gramps as _parse_gramps_shared
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 RECORD_DATES_FILE = DATA_DIR / "gen_record_dates.json"
@@ -25,33 +27,14 @@ HISTORICAL_DIR = DATA_DIR / "historical"
 TODAY_YEAR = 2026
 
 # ============================================================
-# Utilities (copiadas de consanguinidad/app.py para no importar el módulo entero)
+# Utilities — strip_ns, safe_int_year, _haversine_km, _norm_name → modules.shared.utils
 # ============================================================
-
-def strip_ns(tag: str):
-    return tag.split('}')[-1] if '}' in tag else tag
-
 
 def text_of(elem):
     if elem is None:
         return None
     if elem.text and elem.text.strip():
         return elem.text.strip()
-    return None
-
-
-def safe_int_year(val):
-    if val is None:
-        return None
-    try:
-        if isinstance(val, int):
-            return val
-        s = str(val)
-        m = re.search(r"(\d{4})", s)
-        if m:
-            return int(m.group(1))
-    except Exception:
-        return None
     return None
 
 
@@ -73,345 +56,28 @@ def safe_percentile(data, p):
 
 def parse_gramps_extended(content_bytes: bytes):
     """
-    Parsea un archivo GRAMPS XML y extrae personas y familias con campos adicionales
-    respecto al parser de consanguinidad: bautismo, matrimonio, todos los eventos por
-    persona, y flag has_parents.
+    Parsea un archivo GRAMPS XML y extrae personas y familias.
+    Delega al parser unificado GrampsDB de modules.shared.gramps_parser.
 
     Retorna:
       people_ext: {pid: {id, name, sex, birth_year, birth_place,
                           baptism_year, baptism_place, death_year, death_place,
-                          has_parents, events: [{type, year, place}]}}
-      families_ext: {fid: {id, husband, wife, children, marriage_year, marriage_place}}
+                          has_parents, events: [{type, year, place}], notes}}
+      families_ext: {fid: {id, husband, wife, children, marriage_year,
+                            marriage_place, marriage_notes}}
     """
-    if content_bytes.startswith(b'\xef\xbb\xbf'):
-        content_bytes = content_bytes[3:]
-    content_bytes = content_bytes.lstrip()
-
-    if content_bytes[:4] == b'PK\x03\x04':
+    if content_bytes[:4] == b'PK':
         st.error(t("package_error"))
         return {}, {}
-
     try:
-        root = ET.fromstring(content_bytes)
+        db = _parse_gramps_shared(content_bytes)
+    except ValueError as e:
+        st.error(str(e))
+        return {}, {}
     except Exception as e:
         st.error(t("xml_error").format(e))
         return {}, {}
-
-    # --- Paso 0: lugares ---
-    place_map = {}
-    for pl in root.iter():
-        if strip_ns(pl.tag).lower() != 'placeobj':
-            continue
-        ph = pl.get('handle') or pl.get('id')
-        if not ph:
-            continue
-        pname = plat = plon = None
-        for pch in pl:
-            pctag = strip_ns(pch.tag).lower()
-            if pctag in ('pname', 'ptitle', 'title', 'name'):
-                pname = pch.get('value') or (pch.text.strip() if pch.text else None)
-            elif pctag == 'coord':
-                try:
-                    plat = float(pch.get('lat') or pch.get('latitude') or '')
-                except (TypeError, ValueError):
-                    pass
-                try:
-                    plon = float(pch.get('long') or pch.get('lon') or pch.get('longitude') or '')
-                except (TypeError, ValueError):
-                    pass
-        place_map[ph] = {'name': pname, 'lat': plat, 'lon': plon}
-
-    # --- Paso 0b: notas (handle -> texto) ---
-    notes_map = {}
-    for note in root.iter():
-        if strip_ns(note.tag).lower() != 'note':
-            continue
-        nhandle = note.get('handle') or note.get('id')
-        if not nhandle:
-            continue
-        text = ''
-        for ch in note.iter():
-            if strip_ns(ch.tag).lower() == 'text' and ch.text:
-                text = ch.text.strip()
-                break
-        if not text and note.text:
-            text = note.text.strip()
-        notes_map[nhandle] = text
-
-    # --- Paso 1: eventos ---
-    events = {}
-    for ev in root.iter():
-        tag = strip_ns(ev.tag).lower()
-        if tag not in ('event', 'events'):
-            continue
-        ev_id = ev.get('id') or ev.get('handle')
-        if not ev_id:
-            continue
-        date_text = None
-        place_name = None
-        place_hlink = None
-        lat = lon = None
-        ev_type = None
-        ev_note_texts = []
-        for ch in ev:
-            ctag = strip_ns(ch.tag).lower()
-            if ctag == 'type':
-                ev_type = (ch.text or '').strip().lower()
-            if ctag == 'dateval':
-                date_text = ch.get('val') or date_text
-            if ctag in ('date', 'date_iso', 'formatted'):
-                if ch.text and ch.text.strip():
-                    date_text = date_text or ch.text.strip()
-            if ctag in ('place', 'place_ref'):
-                place_hlink = ch.get('hlink') or ch.get('handle') or place_hlink
-                if ch.text and ch.text.strip():
-                    place_name = ch.text.strip()
-                for pch in ch:
-                    if strip_ns(pch.tag).lower() in ('name', 'placename') and pch.text:
-                        place_name = pch.text.strip()
-            if ctag in ('latitude', 'lat'):
-                try:
-                    lat = float(ch.text.strip())
-                except Exception:
-                    pass
-            if ctag in ('longitude', 'lon', 'long'):
-                try:
-                    lon = float(ch.text.strip())
-                except Exception:
-                    pass
-            if ctag == 'noteref':
-                nh = ch.get('hlink') or ch.get('handle')
-                if nh and nh in notes_map:
-                    ev_note_texts.append(notes_map[nh])
-        if place_hlink and place_hlink in place_map:
-            pl_data = place_map[place_hlink]
-            place_name = place_name or pl_data.get('name')
-            lat = lat if lat is not None else pl_data.get('lat')
-            lon = lon if lon is not None else pl_data.get('lon')
-        entry = {'date': date_text, 'place': place_name, 'lat': lat, 'lon': lon,
-                 'type': ev_type, 'notes': ev_note_texts}
-        events[ev_id] = entry
-        if ev.get('handle') and ev.get('handle') != ev_id:
-            events[ev.get('handle')] = entry
-
-    # --- Paso 2: personas ---
-    people_ext = {}
-    person_eventrefs = defaultdict(list)
-    fam_children = defaultdict(list)
-    fam_parents_map = defaultdict(list)
-    # Mapa handle_persona → id_persona (para resolver father/mother en familias)
-    person_handle_to_id = {}
-
-    for p in root.iter():
-        if strip_ns(p.tag).lower() != 'person':
-            continue
-        pid = p.get('id') or p.get('handle') or f"UNKNOWN_{len(people_ext)+1}"
-        phandle = p.get('handle')
-        if phandle and phandle != pid:
-            person_handle_to_id[phandle] = pid
-        name = sex = None
-        raw_birth_date = None
-        person_note_texts = []
-
-        for c in p:
-            tag = strip_ns(c.tag).lower()
-            if tag == 'noteref':
-                nh = c.get('hlink') or c.get('handle')
-                if nh and nh in notes_map:
-                    person_note_texts.append(notes_map[nh])
-            if tag in ('name', 'names'):
-                first = last = ''
-                for n in c:
-                    nt = strip_ns(n.tag).lower()
-                    if nt in ('full', 'formatted', 'fullname'):
-                        if n.text and n.text.strip():
-                            name = n.text.strip()
-                            break
-                    if nt in ('first', 'given'):
-                        if n.text:
-                            first = n.text.strip()
-                    if nt in ('last', 'surname', 'family'):
-                        if n.text:
-                            last = n.text.strip()
-                if not name:
-                    candidate = (first + ' ' + last).strip()
-                    if candidate:
-                        name = candidate
-            elif tag in ('gender', 'sex'):
-                sex = text_of(c)
-            elif tag in ('birth', 'birthdate'):
-                if list(c):
-                    for ch in c:
-                        if strip_ns(ch.tag).lower() in ('date', 'date_iso'):
-                            raw_birth_date = text_of(ch)
-                        if strip_ns(ch.tag).lower() in ('eventref', 'event_ref', 'event'):
-                            h = ch.get('hlink') or ch.get('handle') or ch.get('id')
-                            if h:
-                                person_eventrefs[pid].append(h)
-                else:
-                    raw_birth_date = text_of(c)
-            elif tag in ('eventref', 'event_ref'):
-                h = c.get('hlink') or c.get('handle') or c.get('id')
-                if h:
-                    person_eventrefs[pid].append(h)
-            elif tag == 'childof':
-                fh = c.get('hlink') or c.get('handle') or c.get('ref')
-                if fh:
-                    fam_children[fh].append(pid)
-            elif tag == 'parentin':
-                fh = c.get('hlink') or c.get('handle') or c.get('ref')
-                if fh:
-                    fam_parents_map[fh].append(pid)
-
-        if not name:
-            fn = p.find(".//fullname")
-            if fn is not None and fn.text:
-                name = fn.text.strip()
-        if not name:
-            name = pid
-
-        people_ext[pid] = {
-            'id': pid,
-            'name': name,
-            'sex': sex or '',
-            'birth_year': safe_int_year(raw_birth_date),
-            'birth_place': None,
-            'baptism_year': None,
-            'baptism_place': None,
-            'death_year': None,
-            'death_place': None,
-            'has_parents': False,
-            'events': [],
-            'notes': person_note_texts,  # textos de notas vinculadas a la persona
-        }
-
-    # --- Paso 3: familias con marriage_year ---
-    # Primer sub-paso: registrar handles de familia
-    fam_handle_to_id = {}
-    families_ext = {}
-    for f in root.iter():
-        if strip_ns(f.tag).lower() != 'family':
-            continue
-        fid = f.get('id') or f.get('handle') or f"FAM_{len(families_ext)+1}"
-        fhandle = f.get('handle')
-        entry_fam = {
-            'id': fid,
-            'husband': None,
-            'wife': None,
-            'children': [],
-            'marriage_year': None,
-            'marriage_place': None,
-            'marriage_notes': [],  # notas del evento de matrimonio
-        }
-        families_ext[fid] = entry_fam
-        if fhandle:
-            fam_handle_to_id[fhandle] = fid
-            families_ext[fhandle] = entry_fam  # alias por handle
-
-        # Extraer husband, wife, children e eventref de matrimonio directamente
-        # Los hlinks apuntan a handles de persona; resolverlos a IDs via person_handle_to_id
-        for ch in f:
-            ctag = strip_ns(ch.tag).lower()
-            if ctag == 'father':
-                hlink = ch.get('hlink') or ch.get('handle')
-                if hlink:
-                    entry_fam['husband'] = person_handle_to_id.get(hlink, hlink)
-            elif ctag == 'mother':
-                hlink = ch.get('hlink') or ch.get('handle')
-                if hlink:
-                    entry_fam['wife'] = person_handle_to_id.get(hlink, hlink)
-            elif ctag == 'child':
-                hlink = ch.get('hlink') or ch.get('handle')
-                if hlink:
-                    entry_fam['children'].append(person_handle_to_id.get(hlink, hlink))
-            elif ctag == 'eventref':
-                ev_hlink = ch.get('hlink') or ch.get('handle')
-                if ev_hlink and ev_hlink in events:
-                    ev = events[ev_hlink]
-                    ev_type_str = (ev.get('type') or '').lower()
-                    if ev_type_str in ('marriage', 'matrimonio', 'casamiento', 'married'):
-                        entry_fam['marriage_year'] = safe_int_year(ev.get('date'))
-                        entry_fam['marriage_place'] = ev.get('place')
-                        entry_fam['marriage_notes'] = ev.get('notes', [])
-
-    # Reconciliar fam_children (de <childof> en personas) en familias
-    for fh, kids in fam_children.items():
-        fid = fam_handle_to_id.get(fh, fh)
-        if fid not in families_ext:
-            families_ext[fid] = {'id': fid, 'husband': None, 'wife': None, 'children': [],
-                                  'marriage_year': None, 'marriage_place': None}
-        families_ext[fid]['children'].extend(kids)
-
-    # Reconciliar fam_parents_map (de <parentin> en personas) — solo si husband/wife aún vacíos
-    for fh, pids in fam_parents_map.items():
-        fid = fam_handle_to_id.get(fh, fh)
-        if fid not in families_ext:
-            families_ext[fid] = {'id': fid, 'husband': None, 'wife': None, 'children': [],
-                                  'marriage_year': None, 'marriage_place': None}
-        fam = families_ext[fid]
-        if pids and not fam['husband']:
-            fam['husband'] = pids[0]
-        if len(pids) >= 2 and not fam['wife']:
-            fam['wife'] = pids[1]
-
-    # Eliminar alias por handle (quedan entradas duplicadas) — conservar solo IDs reales
-    real_fam_ids = set(fam_handle_to_id.values())
-    # Si no había ningún ID real, quedarse con todo
-    if real_fam_ids:
-        families_ext = {k: v for k, v in families_ext.items() if k in real_fam_ids}
-
-    # Deduplicar children
-    for fam in families_ext.values():
-        fam['children'] = list(dict.fromkeys(fam.get('children', [])))
-
-    # Marcar has_parents en personas que son hijos de alguna familia
-    children_ids = set()
-    for fam in families_ext.values():
-        for cid in fam.get('children', []):
-            children_ids.add(cid)
-    for pid in people_ext:
-        if pid in children_ids:
-            people_ext[pid]['has_parents'] = True
-
-    # Rellenar birth/baptism/death desde eventos por persona
-    BAPTISM_TYPES = {'baptism', 'christening', 'christen', 'bautismo', 'bautizo', 'christened',
-                     'baptized', 'baptised'}
-    DEATH_TYPES = {'death', 'burial', 'cremation', 'entierro', 'defunción', 'defuncion',
-                   'óbito', 'obito'}
-    BIRTH_TYPES = {'birth', 'nacimiento'}
-
-    for pid, evlist in person_eventrefs.items():
-        if pid not in people_ext:
-            continue
-        p = people_ext[pid]
-        for h in evlist:
-            ev = events.get(h)
-            if not ev:
-                continue
-            ev_type_str = (ev.get('type') or '').lower()
-            year = safe_int_year(ev.get('date'))
-            place = ev.get('place')
-
-            # Registrar en lista de eventos
-            p['events'].append({'type': ev_type_str, 'year': year, 'place': place})
-
-            if ev_type_str in BIRTH_TYPES:
-                if not p['birth_year'] and year:
-                    p['birth_year'] = year
-                if not p['birth_place'] and place:
-                    p['birth_place'] = place
-            elif ev_type_str in BAPTISM_TYPES:
-                if not p['baptism_year'] and year:
-                    p['baptism_year'] = year
-                if not p['baptism_place'] and place:
-                    p['baptism_place'] = place
-            elif ev_type_str in DEATH_TYPES:
-                if not p['death_year'] and year:
-                    p['death_year'] = year
-                if not p['death_place'] and place:
-                    p['death_place'] = place
-
-    return people_ext, families_ext
+    return db.to_persons_ext(), db.to_families_ext()
 
 
 # ============================================================
@@ -2259,30 +1925,9 @@ try:
 except ImportError:
     _CAND_HAS_RF = False
 
-try:
-    import unicodedata as _unicodedata
-except ImportError:
-    _unicodedata = None
+# _haversine_km y _norm_name → modules.shared.utils (importados al inicio del módulo)
 
 import uuid as _uuid_lib
-
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return R * 2 * math.asin(min(1.0, math.sqrt(a)))
-
-
-def _norm_name(name: str) -> str:
-    name = (name or '').lower().strip()
-    if _unicodedata:
-        name = _unicodedata.normalize("NFD", name)
-        name = "".join(c for c in name if _unicodedata.category(c) != "Mn")
-    name = re.sub(r"\s+", " ", name)
-    return name
 
 
 def _parse_cand_extra(content_bytes: bytes):
@@ -2926,7 +2571,7 @@ def page_identificacion_candidatos(content_bytes):
     # ── Cache parse (re-runs are fast; full parse only on file change) ────────
     content_hash = hash(content_bytes if isinstance(content_bytes, bytes) else bytes(content_bytes))
     if st.session_state.get("_cand_phash") != content_hash:
-        people_ext, families_ext = parse_gramps_extended(content_bytes)
+        people_ext, families_ext = _cached_parse_extended(content_bytes)
         _, place_coords, witness_per_ev, fam_mar_ev = _parse_cand_extra(content_bytes)
         st.session_state.update({
             "_cand_phash": content_hash,

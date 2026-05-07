@@ -8,6 +8,8 @@ from collections import defaultdict, deque
 import io
 
 from translations import t, get_lang
+from modules.shared.utils import strip_ns, safe_year as safe_int_year
+from modules.shared.gramps_parser import parse_gramps as _parse_gramps_shared
 
 # ----------------------------
 # Utilities placeholder — TRANSLATIONS block removed (using shared translations.py)
@@ -376,8 +378,7 @@ TRANSLATIONS = {
 # ----------------------------
 # Utilities
 # ----------------------------
-def strip_ns(tag: str):
-    return tag.split('}')[-1] if '}' in tag else tag
+# strip_ns y safe_int_year → modules.shared.utils
 
 def text_of(elem):
     if elem is None:
@@ -386,307 +387,34 @@ def text_of(elem):
         return elem.text.strip()
     return None
 
-def safe_int_year(val):
-    if val is None:
-        return None
-    try:
-        if isinstance(val, int):
-            return val
-        s = str(val)
-        # try to extract 4-digit year
-        import re
-        m = re.search(r"(\d{4})", s)
-        if m:
-            return int(m.group(1))
-    except Exception:
-        return None
-    return None
+# ----------------------------
+# Gramps XML parser — delegated to modules.shared.gramps_parser
+# ----------------------------
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_parse_gramps(content_bytes: bytes):
+    """Parse puro sin side-effects; cacheable por st.cache_data."""
+    db = _parse_gramps_shared(content_bytes)
+    return db.to_persons_dict(), db.to_families_dict()
 
-# ----------------------------
-# Robust Gramps XML parser (people, families, events)
-# ----------------------------
+
 def parse_gramps(content_bytes):
     """
     Parse Gramps XML (bytes). Returns:
       people: dict id -> {id,name,sex,birth_year,place:{'lat','lon','name'}}
       families: dict fid -> {id,husband,wife,children:list}
+    Delegates to the unified GrampsDB parser.
     """
-    # remove BOM
-    if content_bytes.startswith(b'\xef\xbb\xbf'):
-        content_bytes = content_bytes[3:]
-    content_bytes = content_bytes.lstrip()
-
-    # detect ZIP (gpkg) header
-    if content_bytes[:4] == b'PK\x03\x04':
+    if content_bytes[:4] == b'PK':
         st.error(t("package_error"))
         return {}, {}
-
     try:
-        root = ET.fromstring(content_bytes)
+        return _cached_parse_gramps(content_bytes)
+    except ValueError as e:
+        st.error(str(e))
+        return {}, {}
     except Exception as e:
         st.error(t("xml_error").format(e))
         return {}, {}
-
-    # Pass 0: collect place objects (handle -> {name, lat, lon})
-    # In Gramps XML, coordinates live in <placeobj> elements with <coord long=... lat=.../>
-    # Events reference places via <place hlink="..."/>, not inline coords.
-    place_map = {}  # handle -> {'name': str, 'lat': float|None, 'lon': float|None}
-    for pl in root.iter():
-        if strip_ns(pl.tag).lower() != 'placeobj':
-            continue
-        ph = pl.get('handle') or pl.get('id') or None
-        if not ph:
-            continue
-        pname = None
-        plat = None
-        plon = None
-        for pch in pl:
-            pctag = strip_ns(pch.tag).lower()
-            if pctag in ('pname', 'ptitle', 'title', 'name'):
-                # pname uses value= attribute in Gramps 1.7+
-                pname = pch.get('value') or (pch.text.strip() if pch.text else None)
-            elif pctag == 'coord':
-                try:
-                    plat = float(pch.get('lat') or pch.get('latitude') or '')
-                except (TypeError, ValueError):
-                    pass
-                try:
-                    plon = float(pch.get('long') or pch.get('lon') or pch.get('longitude') or '')
-                except (TypeError, ValueError):
-                    pass
-        place_map[ph] = {'name': pname, 'lat': plat, 'lon': plon}
-
-    # First pass: collect events (map handle/id -> data)
-    events = {}
-    for ev in root.iter():
-        tag = strip_ns(ev.tag).lower()
-        if tag in ('event', 'events'):
-            ev_id = ev.get('id') or ev.get('handle') or None
-            if not ev_id:
-                continue
-            date_text = None
-            place_name = None
-            place_hlink = None
-            lat = None
-            lon = None
-            ev_type = None
-            for ch in ev:
-                ctag = strip_ns(ch.tag).lower()
-                if ctag == 'type':
-                    ev_type = (ch.text or '').strip().lower()
-                # Gramps 1.7: <dateval val="YYYY-MM-DD"/> — fecha en atributo, no texto
-                if ctag == 'dateval':
-                    date_text = ch.get('val') or date_text
-                # Fallback: <date>, <date_iso>, <formatted> con texto
-                if ctag in ('date', 'date_iso', 'formatted'):
-                    if ch.text and ch.text.strip():
-                        date_text = date_text or ch.text.strip()
-                if ctag in ('place', 'place_ref'):
-                    # Gramps 1.7: <place hlink="_xxx"/> — referencia a placeobj
-                    place_hlink = ch.get('hlink') or ch.get('handle') or place_hlink
-                    # Fallback: texto inline o hijo <name>
-                    if ch.text and ch.text.strip():
-                        place_name = ch.text.strip()
-                    for pch in ch:
-                        if strip_ns(pch.tag).lower() in ('name', 'placename'):
-                            if pch.text:
-                                place_name = pch.text.strip()
-                # Coordenadas inline (formato antiguo/no-estándar)
-                if ctag in ('latitude', 'lat'):
-                    try:
-                        lat = float(ch.text.strip())
-                    except Exception:
-                        pass
-                if ctag in ('longitude', 'lon', 'long'):
-                    try:
-                        lon = float(ch.text.strip())
-                    except Exception:
-                        pass
-            # Resolver place_hlink contra place_map
-            if place_hlink and place_hlink in place_map:
-                pl_data = place_map[place_hlink]
-                place_name = place_name or pl_data.get('name')
-                lat = lat if lat is not None else pl_data.get('lat')
-                lon = lon if lon is not None else pl_data.get('lon')
-            # Guardar por handle Y por id para máxima compatibilidad
-            entry = {'date': date_text, 'place': place_name, 'lat': lat, 'lon': lon,
-                     'type': ev_type}
-            events[ev_id] = entry
-            if ev.get('handle') and ev.get('handle') != ev_id:
-                events[ev.get('handle')] = entry
-
-    # Second pass: collect persons and temporary eventrefs/relations
-    people = {}
-    # store mapping person_id -> list of event handles for birth/death if present
-    person_eventrefs = defaultdict(list)
-    # store childof / parentin handles (family handles)
-    fam_children = defaultdict(list)
-    fam_parents = defaultdict(list)
-
-    for p in root.iter():
-        if strip_ns(p.tag).lower() != 'person':
-            continue
-        pid = p.get('id') or p.get('handle') or f"UNKNOWN_{len(people)+1}"
-        name = None
-        sex = None
-        birth_year = None
-        place = None
-
-        # store raw fields that can be later used
-        raw_birth_date = None
-        raw_place = None
-
-        for c in p:
-            tag = strip_ns(c.tag).lower()
-            if tag in ('name','names'):
-                # prefer full/first+surname approach
-                first = ''
-                last = ''
-                for n in c:
-                    t = strip_ns(n.tag).lower()
-                    if t in ('full','formatted','fullname'):
-                        if n.text and n.text.strip():
-                            name = n.text.strip()
-                            break
-                    if t in ('first','given'):
-                        if n.text:
-                            first = n.text.strip()
-                    if t in ('last','surname','family'):
-                        if n.text:
-                            last = n.text.strip()
-                if not name:
-                    candidate = (first + ' ' + last).strip()
-                    if candidate:
-                        name = candidate
-            elif tag in ('gender','sex'):
-                sex = text_of(c)
-            elif tag in ('birth','birthdate'):
-                # maybe contains date child or eventref
-                # check children for date or eventref
-                if list(c):
-                    for ch in c:
-                        if strip_ns(ch.tag).lower() in ('date','date_iso'):
-                            raw_birth_date = text_of(ch)
-                        if strip_ns(ch.tag).lower() in ('eventref','event_ref','event'):
-                            h = ch.get('hlink') or ch.get('handle') or ch.get('id')
-                            if h:
-                                person_eventrefs[pid].append(h)
-                else:
-                    raw_birth_date = text_of(c)
-            elif tag in ('eventref','event_ref'):
-                h = c.get('hlink') or c.get('handle') or c.get('id')
-                if h:
-                    person_eventrefs[pid].append(h)
-            elif tag == 'childof':
-                fam_handle = c.get('hlink') or c.get('handle') or c.get('ref')
-                if fam_handle:
-                    fam_children[fam_handle].append(pid)
-            elif tag == 'parentin':
-                fam_handle = c.get('hlink') or c.get('handle') or c.get('ref')
-                if fam_handle:
-                    fam_parents[fam_handle].append(pid)
-            elif tag in ('attribute','attrs','note'):
-                # attempt to catch birth year or place inside attributes — flexible
-                if c.get('type') and 'birth' in c.get('type').lower():
-                    raw_birth_date = c.get('value') or raw_birth_date
-
-        # fallback for name
-        if not name:
-            fullname = p.find(".//fullname")
-            if fullname is not None and fullname.text:
-                name = fullname.text.strip()
-        if not name:
-            name = pid
-
-        # derive birth year from raw_birth_date or from linked events
-        if raw_birth_date:
-            birth_year = safe_int_year(raw_birth_date)
-
-        people[pid] = {
-            'id': pid,
-            'name': name,
-            'sex': sex or '',
-            'birth': birth_year,
-            'place': None  # to be filled from events if possible
-        }
-
-    # map family handles to family ids (first pass)
-    families = {}
-    for f in root.iter():
-        if strip_ns(f.tag).lower() == 'family':
-            fid = f.get('id') or f.get('handle') or f.get('hlink') or f"FAM_{len(families)+1}"
-            families[fid] = {"id": fid, "husband": None, "wife": None, "children": []}
-            # also try to map handle attributes
-            if f.get('handle'):
-                families[f.get('handle')] = families[fid]
-
-    # reconcile fam_children / fam_parents into families
-    for fam_handle, kids in fam_children.items():
-        # try find matching fid
-        fid = fam_handle
-        if fid not in families:
-            # try find by matching suffix
-            for k in families.keys():
-                if str(k).endswith(str(fam_handle)):
-                    fid = k
-                    break
-        if fid not in families:
-            families[fid] = {"id": fid, "husband": None, "wife": None, "children": []}
-        families[fid]['children'].extend(kids)
-
-    for fam_handle, parents in fam_parents.items():
-        fid = fam_handle
-        if fid not in families:
-            for k in families.keys():
-                if str(k).endswith(str(fam_handle)):
-                    fid = k
-                    break
-        if fid not in families:
-            families[fid] = {"id": fid, "husband": None, "wife": None, "children": []}
-        if len(parents) >= 1:
-            families[fid]['husband'] = parents[0]
-        if len(parents) >= 2:
-            families[fid]['wife'] = parents[1]
-
-    # attempt to fill birth place/year from events mapping using person_eventrefs
-    # Priority: birth events first, then any event with a date/place
-    for pid, evlist in person_eventrefs.items():
-        if pid not in people:
-            continue
-        # Separate birth events from others
-        birth_evs = []
-        other_evs = []
-        for h in evlist:
-            ev = events.get(h)
-            if not ev:
-                continue
-            if (ev.get('type') or '').lower() == 'birth':
-                birth_evs.append(ev)
-            else:
-                other_evs.append(ev)
-        # Fill from birth events first, then fallback to other events
-        for ev in (birth_evs + other_evs):
-            if ev.get('date') and not people[pid]['birth']:
-                people[pid]['birth'] = safe_int_year(ev.get('date'))
-            # Accept place if it has coords (lat/lon) even without name
-            if not people[pid]['place']:
-                has_coords = ev.get('lat') is not None or ev.get('lon') is not None
-                has_name = bool(ev.get('place'))
-                if has_coords or has_name:
-                    people[pid]['place'] = {
-                        'name': ev.get('place') or '',
-                        'lat': ev.get('lat'),
-                        'lon': ev.get('lon')
-                    }
-            # Stop early if we have both birth and place
-            if people[pid]['birth'] and people[pid]['place']:
-                break
-
-    # final fallback: ensure children list is unique
-    for fid, f in families.items():
-        f['children'] = list(dict.fromkeys(f.get('children', [])))
-
-    return people, families
 
 # ----------------------------
 # Build pedigree graph
@@ -1324,6 +1052,37 @@ def render_sidebar():
         st.session_state["cng_analysis_done"] = True
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_inbreeding_results(content_bytes: bytes, max_gen: int):
+    """BFS de consanguinidad cacheado. Devuelve solo tipos serializables (sin NetworkX).
+    El grafo G se reconstruye en render_page porque el pickle de NetworkX
+    no garantiza que G.predecessors() funcione correctamente tras deserializar.
+    """
+    try:
+        people, families = _cached_parse_gramps(content_bytes)
+    except Exception:
+        return [], {}, {}
+    if not people:
+        return [], {}, {}
+    G = build_graph(people, families)
+    cache: dict = {}
+    results = []
+    for pid in G.nodes():
+        Fval = compute_inbreeding(G, pid, cache, max_gen=max_gen)
+        loops = find_consanguinity_for_person(G, pid, max_gen=max_gen)
+        results.append({
+            "id": pid,
+            "name": G.nodes[pid].get("name", pid),
+            "F": Fval,
+            "n_common_ancestors": len(loops),
+            "common_ancestors": "; ".join(
+                [f"{l['ancestor_name']} ({l['ancestor']})" for l in loops]
+            ),
+            "loops_details": loops,
+        })
+    return results, cache, families
+
+
 def render_page():
     """Renderiza la interfaz principal de Consanguinidad."""
     st.title(t("title"))
@@ -1337,48 +1096,29 @@ def render_page():
     max_gen = st.session_state.get("cng_max_gen", 8)
     f_threshold = st.session_state.get("cng_f_threshold", 0.0)
 
-    with st.spinner("Parseando archivo .gramps ..."):
-        people, families = parse_gramps(content)
+    with st.spinner("Analizando..."):
+        results, cache, families = _cached_inbreeding_results(content, max_gen)
 
-    if not people:
+    if not results:
         st.error(t("no_people"))
         return
 
-    G = build_graph(people, families)
+    # Rebuild graph from parsed data (fast: just node/edge insertion)
+    people, fams = _cached_parse_gramps(content)
+    G = build_graph(people, fams)
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df = df.sort_values(by="F", ascending=False)
 
     st.sidebar.markdown(
-        f"**{t('people')}:** {len(people)}  \n"
+        f"**{t('people')}:** {G.number_of_nodes()}  \n"
         f"**{t('families')}:** {len(families)}  \n"
         f"**{t('nodes_graph')}:** {G.number_of_nodes()}  \n"
         f"**{t('edges')}:** {G.number_of_edges()}"
     )
 
-    cache = {}
-    results = []
-    ids = list(G.nodes())
-    progress_bar = st.progress(0)
-    nids = len(ids)
-    for idx_p, pid in enumerate(ids):
-        Fval = compute_inbreeding(G, pid, cache, max_gen=max_gen)
-        loops = find_consanguinity_for_person(G, pid, max_gen=max_gen)
-        results.append({
-            "id": pid,
-            "name": G.nodes[pid].get("name", pid),
-            "F": Fval,
-            "n_common_ancestors": len(loops),
-            "common_ancestors": "; ".join(
-                [f"{l['ancestor_name']} ({l['ancestor']})" for l in loops]
-            ),
-            "loops_details": loops,
-        })
-        if idx_p % 20 == 0:
-            progress_bar.progress(int(100*(idx_p+1)/nids))
-    progress_bar.progress(100)
-
-    df = pd.DataFrame(results)
-    df = df.sort_values(by="F", ascending=False)
     st.session_state["cng_analysis_df"] = df
-
     _render_main_content(G, df, cache, max_gen, f_threshold, families)
 
 

@@ -8,11 +8,16 @@ import json
 import math
 import tempfile
 import datetime
-import unicodedata
 from pathlib import Path
 from collections import Counter, defaultdict
 import streamlit as st
 import pandas as pd
+from modules.shared.utils import (
+    strip_accents, normalize_name, haversine_km, year_from_date_str,
+)
+from modules.shared.gramps_parser import parse_gramps as _parse_gramps_shared
+from modules.shared.confirmed_links_store import ConfirmedLinksStore
+from modules.testigos.dataset import WitnessDataset, build_witness_dataset
 
 # Optional libraries (graceful fallback)
 try:
@@ -60,18 +65,7 @@ def _parse_date_series(series):
     """
     return series.map(_parse_gramps_date)
 
-def _year_from_date_str(val):
-    """Extract the year as int from a GRAMPS date string. Returns None on failure."""
-    if not val or (isinstance(val, float) and pd.isna(val)):
-        return None
-    s = str(val).strip()
-    m = _re.match(r'^(\d{4})', s)
-    if m:
-        return int(m.group(1))
-    try:
-        return _dateutil_parser.parse(s).year  # type: ignore[name-defined]
-    except Exception:
-        return None
+_year_from_date_str = year_from_date_str  # alias — función real en modules.shared.utils
 
 def _year_series(series):
     """Return a Series of int years from GRAMPS date strings (NaN where unparseable)."""
@@ -86,6 +80,9 @@ SUPER_CSV    = DATA_DIR / "superpadrinos_final_bom.csv"
 GRAMPS_PATH  = DATA_DIR / "data.gramps"
 CONFIRMED_PATH               = DATA_DIR / "confirmed_links.json"
 NOTE_CATEGORY_OVERRIDES_PATH = DATA_DIR / "note_category_overrides.json"
+
+# Almacén tipado para confirmed_links.json — punto único de acceso
+_store = ConfirmedLinksStore(CONFIRMED_PATH)
 
 def load_note_category_overrides() -> dict:
     """Carga correcciones manuales de categoría (texto_nota → categoría)."""
@@ -102,7 +99,7 @@ def save_note_category_overrides(overrides: dict):
     )
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone as _tz
 
 from translations import t, get_lang
 from modules.testigos.surname_systems import SURNAME_SYSTEMS, get_system, list_systems_for_selector
@@ -139,27 +136,8 @@ MIN_APPS = 2
 MAX_DIST = 0.0
 
 # ---------------- Utilities ----------------
-def strip_accents(s):
-    if s is None: return ""
-    s = unicodedata.normalize('NFKD', str(s))
-    return ''.join(ch for ch in s if not unicodedata.combining(ch))
-
-def normalize(s):
-    if s is None: return ""
-    s2 = strip_accents(str(s)).lower()
-    s2 = re.sub(r'\s+', ' ', s2).strip()
-    return s2
-
-def haversine_km(lat1, lon1, lat2, lon2):
-    try:
-        R = 6371.0
-        lat1, lon1, lat2, lon2 = map(math.radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
-        dlat = lat2 - lat1; dlon = lon2 - lon1
-        a = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
-        c = 2 * math.asin(min(1, math.sqrt(a)))
-        return R * c
-    except Exception:
-        return None
+# strip_accents, normalize_name, haversine_km, year_from_date_str → modules.shared.utils
+normalize = normalize_name  # alias para compatibilidad con llamadas existentes
 
 def embed_folium(m, width=900, height=600):
     if folium is None:
@@ -172,51 +150,16 @@ def embed_folium(m, width=900, height=600):
 from difflib import SequenceMatcher
 
 def load_confirmations():
-    """
-    Carga el JSON de confirmaciones y asegura la estructura:
-    {
-      'same': { 'canon': [names...] },        # legacy por nombre (mantener)
-      'different': [[name1,name2], ...],      # legacy por nombre
-      'event_groups': { gid: [event_id,...] },# grupos de eventos que son la MISMA persona
-      'status': { key: {state, timestamp, user} } # registro de acciones por evento/cluster
-    }
-    """
-    if not CONFIRMED_PATH.exists():
-        base = {'same': {}, 'different': [], 'event_groups': {}, 'status': {}}
-        try:
-            CONFIRMED_PATH.write_text(json.dumps(base, ensure_ascii=False, indent=2), encoding='utf-8')
-        except:
-            pass
-        return base
-    try:
-        txt = CONFIRMED_PATH.read_text(encoding='utf-8')
-        data = json.loads(txt)
-    except Exception:
-        data = {}
-    # ensure keys
-    data.setdefault('same', {})
-    data.setdefault('different', [])
-    data.setdefault('event_groups', {})
-    data.setdefault('status', {})
-    data.setdefault('gramps_links', {'confirmed': {}, 'discarded': []})
-    if 'confirmed' not in data['gramps_links']:
-        data['gramps_links']['confirmed'] = {}
-    if 'discarded' not in data['gramps_links']:
-        data['gramps_links']['discarded'] = []
-    return data
+    """Carga el JSON de confirmaciones desde disco (delega a ConfirmedLinksStore)."""
+    _store.load()
+    return _store.get_all()
 
 def save_confirmations(conf):
-    """Guarda confirmaciones en disco (UTF-8)."""
-    try:
-        # add metadata
-        conf.setdefault('meta', {})
-        conf['meta']['last_modified'] = datetime.utcnow().isoformat()
-        conf['meta']['by'] = USER
-        CONFIRMED_PATH.write_text(json.dumps(conf, ensure_ascii=False, indent=2), encoding='utf-8')
-        return True
-    except Exception as e:
-        st.error(t("err_guardar_conf", e=e))
-        return False
+    """Guarda confirmaciones en disco (delega a ConfirmedLinksStore)."""
+    ok = _store.save_dict(conf, user=USER)
+    if not ok:
+        st.error(t("err_guardar_conf", e="write error"))
+    return ok
 
 # Similarity function (prefer rapidfuzz if available)
 try:
@@ -299,442 +242,48 @@ def load_data_from_xml_or_csv():
 
 # NOTE: Data loading moved to after file uploader UI setup (see below around line 850+)
 
+# ---------------- GRAMPS parsing: unified shared parser (cached by content) ----------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_gramps_db(content_bytes: bytes):
+    """Parsea bytes de GRAMPS XML → GrampsDB (cacheado por contenido, no por ruta)."""
+    return _parse_gramps_shared(content_bytes)
+
+
 # ---------------- GRAMPS parsing: FULL extraction ----------------
 @st.cache_data(ttl=3600)
 def parse_gramps_xml_full(gramps_path):
-    """
-    Parsea el XML de GRAMPS completo y extrae:
-    - Eventos (id, tipo, fecha, lugar, testigos, notas)
-    - Personas (id, nombre) y sus eventos
-    - Lugares (id, nombre, coordenadas)
-
-    Retorna:
-    - events_data: lista de dicts con info completa de eventos incluyendo testigos
-    - persons_map: dict {person_id: {name, events_ids}}
-    - places_map: dict {place_id: {name, lat, lon}}
-    """
+    """Parsea el XML de GRAMPS. Delega al parser unificado de modules.shared.gramps_parser."""
     p = Path(gramps_path)
-    if etree is None:
-        st.error(t("err_lxml"))
-        return [], {}, {}
     if not p.exists():
         st.error(t("err_archivo_no_encontrado", path=gramps_path))
         return [], {}, {}
-
     try:
-        parser = etree.XMLParser(remove_blank_text=True, recover=True)
-        tree = etree.parse(str(p), parser)
-        root = tree.getroot()
-        ns = root.nsmap.get(None)
-        GT = lambda x: f"{{{ns}}}{x}" if ns else x
-
-        # 1. Parse places first (needed for event location names)
-        places_map = {}
-        for place_el in root.findall(".//"+GT("placeobj")):
-            place_id = place_el.get('handle') or place_el.get('id')
-            place_name = ""
-            # Try ptitle first, then pname
-            ptitle_el = place_el.find(GT("ptitle"))
-            if ptitle_el is not None:
-                place_name = ptitle_el.text or ""
-            if not place_name:
-                pname_el = place_el.find(GT("pname"))
-                if pname_el is not None:
-                    place_name = pname_el.get('value') or ""
-
-            # Get coordinates
-            coord_el = place_el.find(GT("coord"))
-            lat = lon = None
-            if coord_el is not None:
-                try:
-                    lat = float(coord_el.get('lat'))
-                    lon = float(coord_el.get('long'))
-                except (ValueError, TypeError):
-                    pass
-
-            if place_id:
-                places_map[place_id] = {
-                    'id': place_id,
-                    'name': place_name.strip(),
-                    'lat': lat,
-                    'lon': lon
-                }
-
-        # 2. Parse persons (id -> name mapping)
-        persons_map = {}
-        for per in root.findall(".//"+GT("person")):
-            pid = per.get('handle') or per.get('id')
-            name_el = per.find(GT("name"))
-            fullname = ""
-            if name_el is not None:
-                parts = []
-                for tag in ("first", "middle", "surname", "prefix", "suffix", "title"):
-                    el = name_el.find(GT(tag))
-                    if el is not None:
-                        txt = "".join(el.itertext()).strip()
-                        if txt:
-                            parts.append(txt)
-                fullname = " ".join(parts).strip() if parts else "".join(name_el.itertext()).strip()
-
-            # Get event references
-            event_refs = []
-            for evref in per.findall(GT("eventref")):
-                ev_handle = evref.get('hlink')
-                ev_role = evref.get('role', 'Primary')
-                if ev_handle:
-                    event_refs.append({'handle': ev_handle, 'role': ev_role})
-
-            if pid:
-                persons_map[pid] = {
-                    'id': pid,
-                    'name': fullname.strip(),
-                    'event_refs': event_refs
-                }
-
-        # 3a. Build event_handle → family spouses map (for Marriage events without a Primary person)
-        # In GRAMPS, Marriage events are owned by <family>, not by a <person>.
-        # persons_map search (role=Primary) won't find them; we need this fallback.
-        def _person_fullname(handle):
-            pd_ = persons_map.get(handle)
-            return pd_['name'] if pd_ else ""
-
-        event_to_family_subject = {}  # event_handle -> "Father Name + Mother Name"
-        for fam_el in root.findall(".//"+GT("family")):
-            fam_father_el = fam_el.find(GT("father"))
-            fam_mother_el = fam_el.find(GT("mother"))
-            father_name = _person_fullname(fam_father_el.get('hlink')) if fam_father_el is not None else ""
-            mother_name = _person_fullname(fam_mother_el.get('hlink')) if fam_mother_el is not None else ""
-            # Compose a label: prefer "Father + Mother", fall back to whichever is available
-            if father_name and mother_name:
-                family_subject = f"{father_name} + {mother_name}"
-            else:
-                family_subject = father_name or mother_name
-            for evref_el in fam_el.findall(GT("eventref")):
-                ev_h = evref_el.get('hlink')
-                if ev_h and family_subject:
-                    event_to_family_subject[ev_h] = family_subject
-
-        # 3b. Build inverted index: event_handle → (person_id, name) for Primary role.
-        # Avoids O(persons × event_refs) scan inside the event loop (was O(n²)).
-        primary_person_by_event: dict = {}
-        for _pid, _pdata in persons_map.items():
-            for _evref in _pdata.get('event_refs', []):
-                if _evref['role'] == 'Primary' and _evref['handle'] not in primary_person_by_event:
-                    primary_person_by_event[_evref['handle']] = (_pid, _pdata['name'])
-
-        # 3. Parse events with witnesses
-        events_data = []
-        for event_el in root.findall(".//"+GT("event")):
-            event_handle = event_el.get('handle')
-            event_id = event_el.get('id')
-
-            # Event type
-            type_el = event_el.find(GT("type"))
-            event_type = type_el.text if type_el is not None else "Unknown"
-
-            # Date
-            date_iso = None
-            dateval_el = event_el.find(GT("dateval"))
-            if dateval_el is not None:
-                date_iso = dateval_el.get('val')
-            else:
-                # Try datestr or other date formats
-                datestr_el = event_el.find(GT("datestr"))
-                if datestr_el is not None:
-                    date_iso = datestr_el.get('val')
-
-            # Place
-            place_hlink = event_el.get('hlink')
-            place_el = event_el.find(GT("place"))
-            if place_el is not None:
-                place_hlink = place_el.get('hlink')
-
-            place_info = places_map.get(place_hlink, {}) if place_hlink else {}
-            place_name = place_info.get('name', '')
-            place_lat = place_info.get('lat')
-            place_lon = place_info.get('lon')
-
-            # Witnesses (stored as attributes with type="Witness")
-            # Each witness may have its own noteref (Attribute Note) nested inside
-            witnesses = []  # list of (name, witness_note)
-            for attr in event_el.findall(GT("attribute")):
-                attr_type = attr.get('type')
-                attr_value = attr.get('value')
-                if attr_type == "Witness" and attr_value:
-                    # Extract note specific to this witness attribute
-                    witness_notes = []
-                    for noteref in attr.findall(GT("noteref")):
-                        note_handle = noteref.get('hlink')
-                        if note_handle:
-                            note_el = root.find(f".//{GT('note')}[@handle='{note_handle}']")
-                            if note_el is not None:
-                                note_text = "".join(note_el.itertext()).strip()
-                                if note_text:
-                                    witness_notes.append(note_text)
-                    witness_note = " | ".join(witness_notes) if witness_notes else ""
-                    witnesses.append((attr_value.strip(), witness_note))
-
-            # Find subject person via pre-built O(1) index (was O(n²) nested loop).
-            subject_id, subject_name = primary_person_by_event.get(event_handle, (None, ""))
-            # Fallback for Marriage events owned by a family (no Primary person)
-            if not subject_name and event_handle in event_to_family_subject:
-                subject_name = event_to_family_subject[event_handle]
-
-            # Create one record per witness
-            if witnesses:
-                for witness_name, witness_note in witnesses:
-                    events_data.append({
-                        'event_id': event_id,
-                        'event_handle': event_handle,
-                        'type': event_type,
-                        'date_iso': date_iso,
-                        'place_name': place_name,
-                        'lat': place_lat,
-                        'lon': place_lon,
-                        'subj_id': subject_id,
-                        'subj_name': subject_name,
-                        'witness_raw': witness_name,
-                        'note': witness_note
-                    })
-            else:
-                # Event without witnesses - still include for completeness
-                events_data.append({
-                    'event_id': event_id,
-                    'event_handle': event_handle,
-                    'type': event_type,
-                    'date_iso': date_iso,
-                    'place_name': place_name,
-                    'lat': place_lat,
-                    'lon': place_lon,
-                    'subj_id': subject_id,
-                    'subj_name': subject_name,
-                    'witness_raw': '',
-                    'note': ''
-                })
-
-        return events_data, persons_map, places_map
-
+        db = _load_gramps_db(p.read_bytes())
+    except ValueError as e:
+        st.error(t("err_parse_xml", e=e))
+        return [], {}, {}
     except Exception as e:
         st.error(t("err_parse_xml", e=e))
         import traceback
         st.error(traceback.format_exc())
         return [], {}, {}
+    return db.to_witness_events(), {}, db.to_places_map()
 
-# ---------------- GRAMPS indexing (legacy, for compatibility) ----------------
+# ---------------- GRAMPS indexing (delegated to GrampsDB.to_gramps_index) ----------------
 @st.cache_data(ttl=3600)
 def index_gramps(gramps_path):
     """
     Indexa personas del árbol GRAMPS.
-    Retorna (persons_map, id_map) donde persons_map es:
-      { normalize(name): [{ id, name, birth_year, death_year, birth_place, death_place,
-                             birth_lat, birth_lon, death_lat, death_lon,
-                             notes, parents, spouses, children }] }
+    Retorna (persons_map, id_map) delegando al parser unificado.
     """
-    persons_map = {}
-    id_map = {}
     p = Path(gramps_path)
-    if etree is None or not p.exists():
-        return persons_map, id_map
+    if not p.exists():
+        return {}, {}
     try:
-        parser = etree.XMLParser(remove_blank_text=True, recover=True)
-        tree = etree.parse(str(p), parser)
-        root = tree.getroot()
-        ns = root.nsmap.get(None)
-        GT = lambda x: f"{{{ns}}}{x}" if ns else x
-
-        # ── Pasada 1: indexar auxiliares ────────────────────────────────────
-        # Lugares: handle → {name, lat, lon}
-        places_h = {}
-        for pl in root.findall(".//" + GT("placeobj")):
-            ph = pl.get('handle')
-            ptitle = pl.get('ptitle') or ""
-            if not ptitle:
-                pn = pl.find(GT("pname"))
-                if pn is not None:
-                    ptitle = pn.get('value') or "".join(pn.itertext()).strip()
-            coord = pl.find(GT("coord"))
-            lat = lon = None
-            if coord is not None:
-                try: lat = float(coord.get('lat', ''))
-                except Exception: pass
-                try: lon = float(coord.get('long', ''))
-                except Exception: pass
-            places_h[ph] = {'name': ptitle, 'lat': lat, 'lon': lon}
-
-        # Notas: handle → texto
-        notes_h = {}
-        for nt in root.findall(".//" + GT("note")):
-            nh = nt.get('handle')
-            txt = "".join(nt.itertext()).strip()
-            if nh and txt:
-                notes_h[nh] = txt
-
-        # Eventos: handle → {type, date, place_name, lat, lon}
-        events_h = {}
-        for ev in root.findall(".//" + GT("event")):
-            eh = ev.get('handle')
-            etype = "".join(ev.find(GT("type")).itertext()).strip() if ev.find(GT("type")) is not None else ""
-            date_val = None
-            dv = ev.find(GT("dateval"))
-            if dv is not None:
-                date_val = dv.get('val')
-            else:
-                ds = ev.find(GT("datestr"))
-                if ds is not None:
-                    date_val = ds.get('val')
-            place_name = lat = lon = None
-            place_el = ev.find(GT("place"))
-            if place_el is not None:
-                ph2 = place_el.get('hlink')
-                if ph2 and ph2 in places_h:
-                    place_name = places_h[ph2]['name']
-                    lat = places_h[ph2]['lat']
-                    lon = places_h[ph2]['lon']
-            events_h[eh] = {'type': etype, 'date': date_val, 'place_name': place_name, 'lat': lat, 'lon': lon}
-
-        # Familias: handle → {father_handle, mother_handle, children_handles}
-        families_h = {}
-        for fam in root.findall(".//" + GT("family")):
-            fh = fam.get('handle')
-            father_h = None
-            mother_h = None
-            children_hh = []
-            fe = fam.find(GT("father"))
-            if fe is not None: father_h = fe.get('hlink')
-            me = fam.find(GT("mother"))
-            if me is not None: mother_h = me.get('hlink')
-            for ch in fam.findall(GT("childref")):
-                chh = ch.get('hlink')
-                if chh: children_hh.append(chh)
-            families_h[fh] = {'father_h': father_h, 'mother_h': mother_h, 'children_h': children_hh}
-
-        # Personas: handle → nombre (para resolver relaciones familiares)
-        persons_by_handle = {}
-        for per in root.findall(".//" + GT("person")):
-            ph3 = per.get('handle')
-            name_el = per.find(".//" + GT("name"))
-            fullname = ""
-            if name_el is not None:
-                parts = []
-                for tag in ("first", "middle", "surname", "prefix", "suffix", "title"):
-                    el = name_el.find(GT(tag))
-                    if el is not None:
-                        txt = "".join(el.itertext()).strip()
-                        if txt: parts.append(txt)
-                fullname = " ".join(parts).strip() if parts else "".join(name_el.itertext()).strip()
-            else:
-                fullname = per.findtext(".//" + GT("name")) or ""
-            if ph3:
-                persons_by_handle[ph3] = fullname
-
-        # ── Pasada 2: construir índice enriquecido ───────────────────────────
-        def _year_from_date(date_str):
-            if not date_str: return None
-            import re as _re
-            m = _re.match(r'(\d{4})', str(date_str))
-            return int(m.group(1)) if m else None
-
-        for per in root.findall(".//" + GT("person")):
-            pid = per.get('id')
-            ph_self = per.get('handle')
-            name_el = per.find(".//" + GT("name"))
-            fullname = ""
-            if name_el is not None:
-                parts = []
-                for tag in ("first", "middle", "surname", "prefix", "suffix", "title"):
-                    el = name_el.find(GT(tag))
-                    if el is not None:
-                        txt = "".join(el.itertext()).strip()
-                        if txt: parts.append(txt)
-                fullname = " ".join(parts).strip() if parts else "".join(name_el.itertext()).strip()
-            else:
-                fullname = per.findtext(".//" + GT("name")) or ""
-            if not fullname:
-                continue
-
-            id_map[str(pid)] = fullname
-
-            # Eventos vitales de esta persona
-            birth_year = death_year = None
-            birth_place = death_place = None
-            birth_lat = birth_lon = death_lat = death_lon = None
-            birth_types = {'birth', 'baptism', 'bautismo', 'nacimiento', 'christening'}
-            death_types = {'death', 'burial', 'defunción', 'defuncion', 'entierro', 'cremation'}
-            for eref in per.findall(GT("eventref")):
-                eh = eref.get('hlink')
-                if eh not in events_h: continue
-                ev_data = events_h[eh]
-                etype_lower = ev_data['type'].lower()
-                year = _year_from_date(ev_data['date'])
-                if etype_lower in birth_types and birth_year is None:
-                    birth_year = year
-                    birth_place = ev_data['place_name']
-                    birth_lat = ev_data['lat']
-                    birth_lon = ev_data['lon']
-                elif etype_lower in death_types and death_year is None:
-                    death_year = year
-                    death_place = ev_data['place_name']
-                    death_lat = ev_data['lat']
-                    death_lon = ev_data['lon']
-
-            # Notas de la persona
-            notes = []
-            for nref in per.findall(GT("noteref")):
-                nh = nref.get('hlink')
-                if nh in notes_h:
-                    notes.append(notes_h[nh])
-
-            # Relaciones familiares
-            parents = []
-            spouses = []
-            children = []
-
-            # Padres: la persona es hijo en una familia (childof)
-            for childof in per.findall(GT("childof")):
-                fh = childof.get('hlink')
-                if fh in families_h:
-                    fam_data = families_h[fh]
-                    for ph_parent in [fam_data['father_h'], fam_data['mother_h']]:
-                        if ph_parent and ph_parent in persons_by_handle:
-                            pname = persons_by_handle[ph_parent]
-                            if pname: parents.append(pname)
-
-            # Cónyuge e hijos: la persona está en una familia como padre/madre (parentin)
-            for parentin in per.findall(GT("parentin")):
-                fh = parentin.get('hlink')
-                if fh in families_h:
-                    fam_data = families_h[fh]
-                    # El cónyuge es el otro progenitor
-                    for ph_other in [fam_data['father_h'], fam_data['mother_h']]:
-                        if ph_other and ph_other != ph_self and ph_other in persons_by_handle:
-                            sname = persons_by_handle[ph_other]
-                            if sname: spouses.append(sname)
-                    # Hijos
-                    for ph_child in fam_data['children_h']:
-                        if ph_child in persons_by_handle:
-                            cname = persons_by_handle[ph_child]
-                            if cname: children.append(cname)
-
-            k = normalize(fullname)
-            persons_map.setdefault(k, []).append({
-                'id': str(pid),
-                'name': fullname,
-                'birth_year': birth_year,
-                'death_year': death_year,
-                'birth_place': birth_place,
-                'death_place': death_place,
-                'birth_lat': birth_lat,
-                'birth_lon': birth_lon,
-                'death_lat': death_lat,
-                'death_lon': death_lon,
-                'notes': notes,
-                'parents': list(dict.fromkeys(parents)),   # sin duplicados
-                'spouses': list(dict.fromkeys(spouses)),
-                'children': list(dict.fromkeys(children)),
-            })
+        db = _load_gramps_db(p.read_bytes())
+        return db.to_gramps_index()
     except Exception:
         return {}, {}
-    return persons_map, id_map
 
 # NOTE: gramps_index, gramps_id_map, by_witness, subj_id_map are now built after data loading (see line ~860+)
 
@@ -1101,6 +650,16 @@ def apply_event_confirmations_and_rebuild_witness_canon():
         pass
 
     return True
+
+
+def apply_event_confirmations_and_rebuild_witness_canon_from(dataset: 'WitnessDataset'):
+    """Wrapper dataset-aware: opera sobre dataset.df y actualiza dataset.by_witness."""
+    global df, by_witness
+    df = dataset.df
+    apply_event_confirmations_and_rebuild_witness_canon()
+    dataset.df = df
+    dataset.by_witness = by_witness
+
 
 def surnames_stats(df_in, topn=100):
     dfc = df_in.copy()
@@ -1471,82 +1030,81 @@ def render_page():
         st.warning(t("data_no_gramps_xml"))
         return
 
-    # Cargar datos principales
-    df, df_places = load_data_from_xml_or_csv()
-    df_notes = load_csv(NOTES_CSV)
-    df_super = load_csv(SUPER_CSV)
-
-    if df.empty:
-        st.error(t("data_no_extraer_xml"))
-        return
-
-    CONF = load_confirmations()
-    df = apply_confirmations_to_df(df, CONF)
-
-    expected_cols = ['subj_id','subj_name','witness_raw','witness_norm','place_name','lat','lon','date_iso','note','event_id','type']
-    for c in expected_cols:
-        if c not in df.columns:
-            df[c] = None
-    df['_date_parsed'] = _parse_date_series(df['date_iso'] if 'date_iso' in df.columns else pd.Series(dtype=str))
-
-    # Places index
-    @st.cache_data(ttl=3600)
-    def index_places(df_places):
-        idx = {}
-        if df_places is None or df_places.empty:
-            return idx
-        for _, r in df_places.iterrows():
-            pname = r.get('place_name') or r.get('name') or r.get('title') or ""
-            try:
-                lat = float(r.get('lat')) if r.get('lat') not in (None,"") else None
-                lon = float(r.get('lon')) if r.get('lon') not in (None,"") else None
-            except Exception:
-                lat = lon = None
-            idx[pname] = {'id': r.get('place_id') or r.get('id'), 'name': pname, 'lat': lat, 'lon': lon}
-        return idx
-
-    places_index = index_places(df_places)
-
-    subj_id_map = {}
-    for _, r in df.iterrows():
-        sid = r.get('subj_id')
-        if sid and r.get('subj_name'):
-            subj_id_map[str(sid)] = r.get('subj_name')
-
-    gramps_index, gramps_id_map = index_gramps(xml_path)
-
-    by_witness = defaultdict(list)
-    for _, r in df.iterrows():
-        raw = r.get('witness_canon') if 'witness_canon' in r and r.get('witness_canon') else (r.get('witness_raw') or r.get('witness_norm') or "")
-        wnorm = normalize(raw)
-        if not wnorm: continue
-        by_witness[wnorm].append(dict(r))
-
-    if not df.empty:
-        apply_event_confirmations_and_rebuild_witness_canon()
-
-    # Controles mapa (solo si estamos en esa sección)
+    # ── Controles del mapa (sidebar) ─────────────────────────────────────────
     menu = st.session_state.get("tst_active_page", t("menu_explorar"))
-
-    MAP_MODE = "1 — Migraciones"
-    YEAR_FROM = 0
-    YEAR_TO = 9999
-    FUZZY = 70
-    MIN_APPS = 2
-    MAX_DIST = 0.0
-
+    map_controls = {
+        'map_mode': '1 — Migraciones',
+        'year_from': 0, 'year_to': 9999,
+        'fuzzy': 70, 'min_apps': 2, 'max_dist': 0.0,
+    }
     if menu == t("menu_mapa"):
         st.sidebar.markdown(t("sidebar_map_controls"))
-        MAP_MODE = st.sidebar.selectbox(
+        map_controls['map_mode'] = st.sidebar.selectbox(
             t("sidebar_map_mode"),
             [t("map_mode_1"), t("map_mode_3"), t("map_mode_4"), t("map_mode_5"), t("map_mode_7"), t("map_mode_9")],
             index=1
         )
-        YEAR_FROM = st.sidebar.number_input(t("sidebar_year_from"), value=0, min_value=0, max_value=9999)
-        YEAR_TO = st.sidebar.number_input(t("sidebar_year_to"), value=9999, min_value=0, max_value=9999)
-        FUZZY = st.sidebar.slider(t("sidebar_fuzzy"), 40, 100, 70)
-        MIN_APPS = st.sidebar.slider(t("sidebar_min_apps"), 1, 20, 2)
-        MAX_DIST = st.sidebar.number_input(t("sidebar_max_dist"), value=0.0, min_value=0.0)
+        map_controls['year_from'] = st.sidebar.number_input(t("sidebar_year_from"), value=0, min_value=0, max_value=9999)
+        map_controls['year_to'] = st.sidebar.number_input(t("sidebar_year_to"), value=9999, min_value=0, max_value=9999)
+        map_controls['fuzzy'] = st.sidebar.slider(t("sidebar_fuzzy"), 40, 100, 70)
+        map_controls['min_apps'] = st.sidebar.slider(t("sidebar_min_apps"), 1, 20, 2)
+        map_controls['max_dist'] = st.sidebar.number_input(t("sidebar_max_dist"), value=0.0, min_value=0.0)
+
+    # ── Construir WitnessDataset ──────────────────────────────────────────────
+    try:
+        gramps_db = _load_gramps_db(Path(xml_path).read_bytes())
+    except ValueError as e:
+        st.error(t("err_parse_xml", e=e))
+        return
+
+    _df_notes = load_csv(NOTES_CSV)
+    _df_super = load_csv(SUPER_CSV)
+
+    dataset = build_witness_dataset(
+        gramps_db=gramps_db,
+        store=_store,
+        df_notes=_df_notes,
+        df_super=_df_super,
+        map_controls=map_controls,
+    )
+
+    if dataset.df.empty:
+        st.error(t("data_no_extraer_xml"))
+        return
+
+    # Ensure expected columns exist
+    expected_cols = ['subj_id', 'subj_name', 'witness_raw', 'witness_norm',
+                     'place_name', 'lat', 'lon', 'date_iso', 'note', 'event_id', 'type']
+    for c in expected_cols:
+        if c not in dataset.df.columns:
+            dataset.df[c] = None
+    dataset.df['_date_parsed'] = _parse_date_series(
+        dataset.df['date_iso'] if 'date_iso' in dataset.df.columns else pd.Series(dtype=str)
+    )
+
+    # Apply event confirmations and rebuild witness_canon
+    apply_event_confirmations_and_rebuild_witness_canon_from(dataset)
+
+    # Store dataset in session_state for page functions
+    st.session_state['tst_dataset'] = dataset
+
+    # Populate module globals for page functions that still reference them
+    df = dataset.df
+    df_places = dataset.df_places
+    df_notes = dataset.df_notes
+    df_super = dataset.df_super
+    CONF = _store.get_all()
+    places_index = dataset.places_index
+    subj_id_map = dataset.subj_id_map
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
+    by_witness = dataset.by_witness
+    MAP_MODE = dataset.map_mode
+    YEAR_FROM = dataset.year_from
+    YEAR_TO = dataset.year_to
+    FUZZY = dataset.fuzzy
+    MIN_APPS = dataset.min_apps
+    MAX_DIST = dataset.max_dist
 
     # Dispatcher
     if menu == t("menu_explorar"):
@@ -4063,7 +3621,7 @@ def page_confirmar_coincidencias():
                     for e in ev_groups[gid]:
                         conf_local.setdefault('status', {})[str(e)] = {
                             'state': 'same',
-                            'timestamp': datetime.utcnow().isoformat(),
+                            'timestamp': datetime.now(_tz.utc).isoformat(),
                             'user': USER
                         }
                     save_confirmations(conf_local)
@@ -4093,8 +3651,8 @@ def page_confirmar_coincidencias():
                             pair = [a, b]
                             if pair not in dif and [b, a] not in dif:
                                 dif.append(pair)
-                            conf_local.setdefault('status', {})[a] = {'state':'different','timestamp':datetime.utcnow().isoformat(),'user':USER}
-                            conf_local.setdefault('status', {})[b] = {'state':'different','timestamp':datetime.utcnow().isoformat(),'user':USER}
+                            conf_local.setdefault('status', {})[a] = {'state':'different','timestamp':datetime.now(_tz.utc).isoformat(),'user':USER}
+                            conf_local.setdefault('status', {})[b] = {'state':'different','timestamp':datetime.now(_tz.utc).isoformat(),'user':USER}
                     conf_local['different'] = dif
                     save_confirmations(conf_local)
                     compute_endogamy_stats.clear()
@@ -4129,8 +3687,8 @@ def page_confirmar_coincidencias():
                             a, b = unmerged[i], unmerged[j]
                             if [a, b] not in dif and [b, a] not in dif:
                                 dif.append([a, b])
-                            sts[a] = {'state': 'different', 'timestamp': datetime.utcnow().isoformat(), 'user': USER}
-                            sts[b] = {'state': 'different', 'timestamp': datetime.utcnow().isoformat(), 'user': USER}
+                            sts[a] = {'state': 'different', 'timestamp': datetime.now(_tz.utc).isoformat(), 'user': USER}
+                            sts[b] = {'state': 'different', 'timestamp': datetime.now(_tz.utc).isoformat(), 'user': USER}
 
                     # También pares cruzados entre no-fusionados y cada grupo de merge del cluster
                     for grp_ids in conf_local.get('event_groups', {}).values():
@@ -4142,7 +3700,7 @@ def page_confirmar_coincidencias():
                             rep = next(iter(grp_set))  # un representante del grupo
                             if [u, rep] not in dif and [rep, u] not in dif:
                                 dif.append([u, rep])
-                            sts[u] = {'state': 'different', 'timestamp': datetime.utcnow().isoformat(), 'user': USER}
+                            sts[u] = {'state': 'different', 'timestamp': datetime.now(_tz.utc).isoformat(), 'user': USER}
 
                     conf_local['different'] = dif
                     save_confirmations(conf_local)
@@ -4159,7 +3717,7 @@ def page_confirmar_coincidencias():
                 for r in rows:
                     eid = str(r['event_id'])
                     if eid not in sts:
-                        sts[eid] = {'state':'reviewed','timestamp': datetime.utcnow().isoformat(), 'user': USER}
+                        sts[eid] = {'state':'reviewed','timestamp': datetime.now(_tz.utc).isoformat(), 'user': USER}
                 conf_local['status'] = sts
                 save_confirmations(conf_local)
                 compute_endogamy_stats.clear()
@@ -5270,7 +4828,7 @@ def page_bayesian_identidad():
                         for eid in all_ids:
                             conf_bay.setdefault('status', {})[eid] = {
                                 'state': 'same',
-                                'timestamp': datetime.utcnow().isoformat(),
+                                'timestamp': datetime.now(_tz.utc).isoformat(),
                                 'user': USER,
                             }
                         save_confirmations(conf_bay)
@@ -5296,13 +4854,13 @@ def page_bayesian_identidad():
                                 dif.append(p)
                         conf_bay.setdefault('status', {})[str(eid_a)] = {
                             'state': 'different',
-                            'timestamp': datetime.utcnow().isoformat(),
+                            'timestamp': datetime.now(_tz.utc).isoformat(),
                             'user': USER,
                         }
                     for eid_b in evs_b_ids:
                         conf_bay.setdefault('status', {})[str(eid_b)] = {
                             'state': 'different',
-                            'timestamp': datetime.utcnow().isoformat(),
+                            'timestamp': datetime.now(_tz.utc).isoformat(),
                             'user': USER,
                         }
                     conf_bay['different'] = dif
@@ -5351,9 +4909,9 @@ def generate_witness_html_report(
     title=None,
 ) -> str:
     """Genera un informe HTML auto-contenido para un testigo."""
-    from datetime import datetime as _dt_html
+    from datetime import datetime as _dt_html, timezone as _tz_html
     title = title or t("informe_html_titulo_testigo", name=witness_name)
-    report_date = _dt_html.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    report_date = _dt_html.now(_tz_html.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     stats_rows = "\n".join(
         f"<tr><td><b>{k}</b></td><td>{v}</td></tr>"
