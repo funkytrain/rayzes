@@ -1845,9 +1845,14 @@ def page_notas():
         st.info(t("notas_no_hay"))
         return
 
-    notes_df['categoría'] = notes_df['note'].apply(classify_note)
+    # Construir columna 'categorías' como string con comas (soporta multi-categoría)
+    _cur_overrides = st.session_state.get('tst_note_category_overrides', {})
+    notes_df['categoría'] = notes_df['note'].apply(lambda n: classify_note(n, _cur_overrides))
+    notes_df['categorías'] = notes_df['note'].apply(
+        lambda n: ', '.join(get_note_categories(n, _cur_overrides))
+    )
 
-    # Filtro por categoría
+    # Filtro por categoría (comprueba todas las categorías de cada nota)
     sel_cats = st.multiselect(
         t("notas_filtrar_categoria"), _ALL_NOTE_CATEGORIES,
         default=_ALL_NOTE_CATEGORIES, key="notes_cat_filter"
@@ -1856,8 +1861,13 @@ def page_notas():
     # Búsqueda de texto libre
     q = st.text_input(t("notas_buscar"), key="notes_q_live")
 
-    # Aplicar filtros
-    nf = notes_df[notes_df['categoría'].isin(sel_cats)] if sel_cats else notes_df.copy()
+    # Aplicar filtros — una nota pasa si CUALQUIERA de sus categorías está en sel_cats
+    if sel_cats:
+        def _note_matches_cats(note_text):
+            return bool(set(get_note_categories(note_text, _cur_overrides)) & set(sel_cats))
+        nf = notes_df[notes_df['note'].apply(_note_matches_cats)].copy()
+    else:
+        nf = notes_df.copy()
     if q and q.strip():
         qn = q.strip().lower()
         mask = (nf['note'].astype(str).str.lower().str.contains(qn, na=False) |
@@ -1868,8 +1878,18 @@ def page_notas():
     st.write(t("notas_filas", n=len(nf), total=len(notes_df)))
 
     # Gráfico de distribución de categorías (sobre los datos filtrados por categoría, sin filtro de texto)
-    cat_base = notes_df[notes_df['categoría'].isin(sel_cats)] if sel_cats else notes_df
-    cat_counts = cat_base['categoría'].value_counts().reindex(_ALL_NOTE_CATEGORIES, fill_value=0)
+    if sel_cats:
+        cat_base = notes_df[notes_df['note'].apply(_note_matches_cats)]
+    else:
+        cat_base = notes_df
+    # Cada nota puede contribuir a múltiples categorías en el gráfico
+    from collections import Counter as _Counter
+    _cat_counter = _Counter()
+    for note_text in cat_base['note']:
+        for _c in get_note_categories(note_text, _cur_overrides):
+            if _c in _ALL_NOTE_CATEGORIES:
+                _cat_counter[_c] += 1
+    cat_counts = pd.Series({c: _cat_counter.get(c, 0) for c in _ALL_NOTE_CATEGORIES})
     if PLOTLY_OK:
         import plotly.express as _px
         import plotly.graph_objects as _go
@@ -1889,9 +1909,10 @@ def page_notas():
     else:
         st.bar_chart(cat_counts)
 
-    # Tabla editable: la columna "categoría" tiene un selectbox por celda
+    # Tabla editable: 'categorías' como texto libre separado por comas
     st.caption(t("notas_caption_editar"))
-    edit_df = nf[['witness_raw', 'subj_name', 'place_name', 'date_iso', 'note', 'categoría']].head(1000).copy()
+    _cats_hint = ', '.join(_ALL_NOTE_CATEGORIES)
+    edit_df = nf[['witness_raw', 'subj_name', 'place_name', 'date_iso', 'note', 'categorías']].head(1000).copy()
     edited = st.data_editor(
         edit_df,
         column_config={
@@ -1900,10 +1921,9 @@ def page_notas():
             'place_name':   st.column_config.TextColumn(t("notas_col_lugar"),    disabled=True),
             'date_iso':     st.column_config.TextColumn(t("notas_col_fecha"),    disabled=True),
             'note':         st.column_config.TextColumn(t("notas_col_nota"),     disabled=True),
-            'categoría':    st.column_config.SelectboxColumn(
+            'categorías':   st.column_config.TextColumn(
                                 t("notas_col_categoria"),
-                                options=_ALL_NOTE_CATEGORIES,
-                                required=True,
+                                help=f"Valores válidos (separar con comas si hay varias): {_cats_hint}",
                             ),
         },
         use_container_width=True,
@@ -1911,23 +1931,44 @@ def page_notas():
         key="notes_editor",
     )
 
-    # Detectar cambios respecto a la clasificación automática y guardarlos
-    changed = edited[edited['categoría'] != edit_df['categoría']]
+    # Detectar cambios respecto a los valores actuales y guardarlos
+    changed = edited[edited['categorías'] != edit_df['categorías']]
     if not changed.empty:
-        if st.button(t("notas_guardar", n=len(changed)), key="notes_override_save"):
-            overrides = st.session_state.get('note_category_overrides', {})
-            for _, row in changed.iterrows():
-                overrides[str(row['note'])] = row['categoría']
-            st.session_state['tst_note_category_overrides'] = overrides
-            save_note_category_overrides(overrides)
-            st.success(t("notas_guardadas", n=len(changed)))
-            st.rerun()
+        # Validar que todas las categorías introducidas sean válidas
+        _valid_set = set(_ALL_NOTE_CATEGORIES)
+        _invalid_rows = []
+        for _, row in changed.iterrows():
+            raw_val = str(row['categorías']).strip()
+            parts = [p.strip() for p in raw_val.split(',') if p.strip()]
+            bad = [p for p in parts if p not in _valid_set]
+            if bad:
+                _invalid_rows.append(f"«{raw_val}» → desconocido: {bad}")
+        if _invalid_rows:
+            st.warning(
+                f"Hay categorías no reconocidas. Valores válidos: {_cats_hint}\n\n" +
+                "\n".join(_invalid_rows)
+            )
+        else:
+            if st.button(t("notas_guardar", n=len(changed)), key="notes_override_save"):
+                overrides = st.session_state.get('tst_note_category_overrides', {})
+                for _, row in changed.iterrows():
+                    raw_val = str(row['categorías']).strip()
+                    parts = [p.strip() for p in raw_val.split(',') if p.strip()]
+                    # Guardar como string simple si es una sola categoría, con comas si son varias
+                    overrides[str(row['note'])] = raw_val if len(parts) > 1 else (parts[0] if parts else 'otro')
+                st.session_state['tst_note_category_overrides'] = overrides
+                save_note_category_overrides(overrides)
+                st.success(t("notas_guardadas", n=len(changed)))
+                st.rerun()
 
     # Resumen de correcciones manuales guardadas
-    overrides = st.session_state.get('note_category_overrides', {})
+    overrides = st.session_state.get('tst_note_category_overrides', {})
     if overrides:
         with st.expander(t("notas_correcciones", n=len(overrides)), expanded=False):
-            ov_df = pd.DataFrame([{'nota': k, 'categoría asignada': v} for k, v in overrides.items()])
+            ov_df = pd.DataFrame([
+                {'nota': k, 'categoría(s) asignada(s)': v if isinstance(v, str) else ', '.join(v)}
+                for k, v in overrides.items()
+            ])
             st.dataframe(ov_df, use_container_width=True)
             if st.button(t("notas_borrar"), key="notes_clear_overrides"):
                 st.session_state['tst_note_category_overrides'] = {}
@@ -4093,9 +4134,14 @@ def classify_note(note_text: str, _overrides: dict | None = None) -> str:
 
     # 1. Override manual persiste sobre todo
     if _overrides is None:
-        _overrides = st.session_state.get('note_category_overrides', {})
+        _overrides = st.session_state.get('tst_note_category_overrides', {})
     if raw in _overrides:
-        return _overrides[raw]
+        v = _overrides[raw]
+        if isinstance(v, list):
+            return v[0] if v else 'otro'
+        # Comma-sep string: devolver la primera categoría
+        parts = [p.strip() for p in str(v).split(',') if p.strip()]
+        return parts[0] if parts else 'otro'
 
     txt = normalize(raw)
     txt_clean = re.sub(r'[^\w\s]', ' ', txt)
@@ -4135,6 +4181,25 @@ def classify_note(note_text: str, _overrides: dict | None = None) -> str:
         return 'origen'
 
     return 'otro'
+
+
+def get_note_categories(note_text: str, _overrides: dict | None = None) -> list[str]:
+    """Retorna todas las categorías de una nota, soportando multi-categoría.
+
+    Si hay override con comas ('origen, estado_civil'), devuelve ['origen', 'estado_civil'].
+    Si no hay override o solo hay una categoría, devuelve una lista con un elemento.
+    """
+    if _overrides is None:
+        _overrides = st.session_state.get('tst_note_category_overrides', {})
+    raw = str(note_text).strip()
+    if raw in _overrides:
+        v = _overrides[raw]
+        if isinstance(v, list):
+            cats = [c for c in v if c in _ALL_NOTE_CATEGORIES]
+            return cats if cats else [classify_note(note_text, _overrides)]
+        parts = [p.strip() for p in str(v).split(',') if p.strip() in _ALL_NOTE_CATEGORIES]
+        return parts if parts else [classify_note(note_text, _overrides)]
+    return [classify_note(note_text, _overrides)]
 
 
 # ── Feature 1: Similitud nominal ─────────────────────────────────────────────
