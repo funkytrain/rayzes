@@ -16,6 +16,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [ADN & Genetics](#adn--genetics)
   - [Migration Intelligence](#migration-intelligence)
   - [Family Completion Engine](#family-completion-engine)
+  - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
 - [Tech Stack](#tech-stack)
@@ -661,7 +662,7 @@ For the selected case, shows:
 - The marriage act witnesses, the orphan's own baptism witnesses (if any), and the baptism witnesses of the orphan's children (the F7 signal sources)
 - A **natural-language narrative** (ES / EN) explaining the evidence: typical marriage age and expected birth range, per-candidate witness matches, temporal and geographic coherence, and a conclusion naming the most probable parent or flagging a tie
 - A candidate table with per-factor scores including F7 (with a breakdown of how many matches came from the orphan's baptism vs. the children's baptisms)
-- **Save to confirmed results** / **Remove saved** buttons: confirmed cases are written to `data/family_completion_results.json` and will be used as input for the Write-back to GRAMPS module when it becomes available. Re-running the analysis does not overwrite this file — the batch lives only in the session, and only your manually confirmed cases persist on disk
+- **Save to confirmed results** / **Remove saved** buttons: confirmed cases are written to `data/family_completion_results.json` and are automatically picked up by the **Export to GRAMPS** module as notes on the relevant marriage families. Re-running the analysis does not overwrite this file — the batch lives only in the session, and only your manually confirmed cases persist on disk
 
 ---
 
@@ -677,7 +678,65 @@ For the selected case, shows:
 
 | File | Purpose |
 |---|---|
-| `data/family_completion_results.json` | Manually confirmed parent–child candidate links, consumed by the future Write-back module |
+| `data/family_completion_results.json` | Manually confirmed parent–child candidate links, consumed by the Export to GRAMPS module |
+
+---
+
+### Export to GRAMPS (Write-back)
+
+This module closes the research loop: it takes all the analytical work done in Rayzes — confirmed witness identities, detected inconsistencies, and Family Completion Engine candidates — and writes them back into the original GRAMPS file as standard notes and tags, without any third-party dependency.
+
+---
+
+#### What it writes
+
+| Data source | Written as | Target in GRAMPS |
+|---|---|---|
+| Confirmed witness links (`confirmed_links.json`) | `<note>` on the person | Person record |
+| Active inconsistencies (`dismissed_inconsistencies.json` excluded) | `<tagref>` pointing to a `GenHelper:Error` or `GenHelper:Warning` tag | Person or family record |
+| Family Completion Engine candidates (prob ≥ threshold) | `<note>` on the family | Family (marriage) record |
+
+**Confirmation notes** are worded as:
+> *"Testigo confirmado: [witness name] identificado como [person name] ([GRAMPS ID]) por GenHelper [date]."*
+
+**Inconsistency tags** use two fixed tag definitions that are created in the GRAMPS file if they do not already exist:
+- `GenHelper:Error` (red `#CC0000`) — biological impossibilities
+- `GenHelper:Warning` (orange `#FF8C00`) — statistically anomalous but possible
+
+**Candidate notes** are worded as:
+> *"Candidato probable a [father/mother] de [orphan name]: [candidate name] (prob=XX%). Factores: F1=X, F4=X, F5=X. Generado por GenHelper [date]."*
+
+---
+
+#### Collision-safe ID allocation
+
+The module scans the full set of existing handles and numeric IDs (notes, tags, persons, families, events, places) in the GRAMPS file before creating anything new. New note IDs follow the `N{NNNN}` pattern; tag IDs follow `T{NNNN}`. New handles are generated as `_` + `secrets.token_hex(14)` (28-character hex strings) and checked against all existing handles before use. No existing data is ever modified or deleted.
+
+---
+
+#### Duplicate detection
+
+Before adding any note or tag, the module checks whether the target person or family already carries an identical or equivalent annotation — both from the original file and from any notes added earlier in the same export session. Duplicates are silently skipped.
+
+---
+
+#### UI
+
+- **Checkboxes** to select which data categories to include (confirmation notes, inconsistency tags, candidate notes)
+- **Minimum probability slider** (default 65 %) for candidate notes
+- **Preview metrics**: how many notes and tags would be added before generating the file
+- **Tree mismatch warning**: if the loaded `.gramps` file contains significantly more or fewer persons than the saved batch results, a warning is shown before the user proceeds
+- **Download button**: generates the enriched `.gramps` file in memory and offers it as a direct download — nothing is written to disk on the server
+- **Expandable change log**: lists every note and tag added, with the affected person or family ID
+
+---
+
+#### Technical notes
+
+- Parsing and serialisation use **lxml** with a fallback to the standard library `xml.etree.ElementTree` if lxml is not available
+- The output file is gzip-compressed (`.gramps` format), identical to what GRAMPS itself produces
+- Special characters in notes (`&`, `<`, `>`) are escaped automatically by both lxml and ElementTree — no manual escaping required
+- The module only reads the GRAMPS file that is already loaded in the sidebar — no separate upload is needed
 
 ---
 
@@ -734,12 +793,12 @@ The following files in `data/` are created and updated automatically as you use 
 
 | File | Purpose |
 |---|---|
-| `confirmed_links.json` | Confirmed/rejected witness identity matches |
+| `confirmed_links.json` | Confirmed/rejected witness identity matches; also feeds confirmation notes in the Export module |
 | `note_category_overrides.json` | Manual note category reclassifications |
 | `gen_record_dates.json` | User-defined civil/parish record coverage ranges per place |
-| `dismissed_inconsistencies.json` | Inconsistencies manually dismissed as false positives |
+| `dismissed_inconsistencies.json` | Inconsistencies manually dismissed as false positives; dismissed items are excluded from Export tags |
 | `historical/<place>.json` | Historical events uploaded per municipality for the Historical Context sub-page |
-| `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine |
+| `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine; fed into Export candidate notes |
 
 These files persist between sessions. Back them up if you want to preserve your review work.
 
