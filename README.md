@@ -10,12 +10,12 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
 
 - [Overview](#overview)
 - [Modules](#modules)
+  - [General (Tree Overview & Data Quality)](#general-tree-overview--data-quality)
   - [Testigos (Witness & Godparent Analysis)](#testigos-witness--godparent-analysis)
   - [Consanguinidad (Consanguinity & Inbreeding Analysis)](#consanguinidad-consanguinity--inbreeding-analysis)
-  - [General (Tree Endpoints, Inconsistencies, Historical Context & Candidate Identification)](#general-tree-endpoints-inconsistencies-historical-context--candidate-identification)
   - [ADN & Genetics](#adn--genetics)
   - [Migration Intelligence](#migration-intelligence)
-  - [Family Completion Engine](#family-completion-engine)
+  - [Family Completion Engine](#family-completion-engine) *(includes manual Candidate Identification)*
   - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
@@ -54,278 +54,9 @@ A **language selector** (English / Spanish) is available at all times in the sid
 
 ## Modules
 
-### Testigos (Witness & Godparent Analysis)
+### General (Tree Overview & Data Quality)
 
-This module analyzes the role of witnesses and godparents (padrinos/madrinas) across baptism and marriage records. It includes 14 pages:
-
----
-
-#### Explorar — Event Explorer
-
-Search and filter the full event dataset. Filter by witness name, event type (baptism, marriage, etc.), location, and year range. Inspect individual records and see which witnesses appear in each event.
-
----
-
-#### Mapa — Geographic Map
-
-Visualize witness activity and migration on an interactive map. Supports **9 map modes**:
-
-- **Hotspots**: Heatmap of event density by location
-- **Connections**: Lines between places where the same witness appeared
-- **Migrations**: Arrows indicating directional movement over time
-- **By family**: Events grouped and colored by family surname
-- **Timeline**: Animated map showing how activity shifted over the years
-- **Clusters**: Geographic clustering of events
-- **Radius**: Witness activity radius estimation
-- **Comparison**: Side-by-side geographic comparison between witnesses
-- **Influence zones**: Voronoi-based territory mapping per witness
-
----
-
-#### Grafo — Social Network Graph
-
-An interactive network graph where nodes are witnesses and edges represent co-appearances in events. Highlights:
-
-- **Bridge witnesses**: People whose removal would disconnect parts of the network (high betweenness centrality)
-- **Clusters**: Communities of witnesses that frequently collaborated
-- Node sizing and coloring by event count or centrality score
-- Filter by minimum edge weight or family
-
----
-
-#### Superpadrinos — Top Witnesses
-
-Ranks witnesses by total number of events. For each top witness, shows:
-
-- Full event timeline
-- Families they most commonly served
-- Geographic reach
-- Years active and longevity score
-- Activity trend (increasing, decreasing, or stable)
-
----
-
-#### Notas — Event Notes Browser
-
-Browse and filter the notes attached to events in the GRAMPS database. Supports manual **category overrides** to reclassify notes. Categories include things like occupation references, health records, social status markers, and more.
-
----
-
-#### Análisis — Statistical Analysis
-
-A deep-dive analytics page covering:
-
-- **Timeline analysis**: Events per year with trend lines
-- **Family pattern analysis**: Which families used the same godparents repeatedly
-- **Endogamy score**: How closed the witness network is (percentage of internal vs. external connections)
-- **Surname timeline**: Track how family surnames appear and disappear as witnesses over generations
-- **Birth order and prestige**: Correlation between a child's birth order and the social standing of their chosen godparent
-- **Stability vs. mobility**: Geographic mobility index for each witness
-
----
-
-#### Timeline — Chronological View
-
-An interactive chronological strip showing witness activity across time. Zoom in to specific decades, filter by witness or family, and inspect individual events by hovering.
-
----
-
-#### Confirmar coincidencias — Confirm Identity Matches
-
-When the same person appears under slightly different name spellings, this page presents candidate pairs for user review. For each candidate pair, you can:
-
-- **Confirm**: Mark two records as the same person
-- **Reject**: Mark them as distinct
-- Confirmations are saved persistently to `data/confirmed_links.json` and propagate throughout all other pages
-
----
-
-#### Identidad bayesiana — Bayesian Identity Resolution
-
-Uses a Bayesian scoring model to compute the probability that two witness records refer to the same individual. The score combines:
-
-- **Name similarity** (fuzzy string matching via rapidfuzz + jellyfish)
-- **Temporal overlap**: Are the active years compatible?
-- **Geographic proximity**: How close were the events in space?
-- **Family overlap**: Did they appear for the same families?
-
-Results are ranked by probability. High-confidence matches can be confirmed directly from this page.
-
----
-
-#### Pendientes — Pending Cases
-
-Shows all witness records that have not yet been confirmed or rejected. Useful as a work queue to ensure no ambiguous identity cases go unresolved before exporting a final report.
-
----
-
-#### Trayectoria vital — Life Trajectory
-
-For a selected witness, reconstructs a probable life trajectory:
-
-- Estimated birth and death year range
-- Map of locations visited over their lifetime
-- Events annotated on a personal timeline
-- Family connections discovered through godparent appearances
-
----
-
-#### Informe — Report Export
-
-Generates a narrative report for a selected witness or the full dataset. Export formats include:
-
-- **HTML**: Formatted printable document with embedded charts
-- **Markdown**: Plain-text structured summary
-- **JSON**: Machine-readable data export
-
-Reports include event tables, geographic summaries, family connections, and network statistics.
-
----
-
-#### Testigos en árbol — Witnesses in the Family Tree
-
-Links witnesses from the event records back to named individuals in the GRAMPS family tree. Uses a scoring system that weighs:
-
-- Name match quality
-- Date compatibility
-- Place overlap
-- Existing confirmations
-
-Shows matched individuals with their GRAMPS person ID and confidence score.
-
----
-
-#### Posibles familiares — Possible Relatives by Surname Coincidence
-
-Detects events where a confirmed witness shares a surname with the event subject, flagging them as possible relatives for further study. The scoring model accounts for:
-
-- **Surname position**: paternal (1st) vs. maternal (2nd) surnames are weighted differently — in Spanish records witnesses can be grandparents or uncles, so the maternal surname of a witness may match the paternal surname of the subject
-- **Surname frequency**: hyper-frequent surnames (García, López, Smith…) receive a penalty, reducing false positives
-- **Presence in the GRAMPS tree**: witnesses found in the family tree receive a score boost; those with a confirmed kinship path receive a larger one
-- **Fuzzy matching**: historical spelling variation is handled with an 82 % similarity threshold via rapidfuzz
-
-**Surname systems supported** (selectable in the sidebar):
-
-| Code | System | Key characteristic |
-|------|--------|--------------------|
-| `es` | Spanish | Two surnames, paternal + maternal (weight 1.0 / 0.75) |
-| `pt` | Portuguese | Two surnames, historical maternal-paternal order |
-| `en` | English / Anglo-Saxon | Single patrilineal surname |
-| `fr` | French | Single surname with noble particles (de, du, de la…) |
-| `de` | German / Dutch | Single surname with particles (von, van, zu…) |
-| `it` | Italian | Single surname with particles (di, del, della…) |
-| `ar` | Arabic | Patronymic chain (ibn/bint); compared by chain position |
-| `ru` | Russian / Slavic | Gendered endings normalised to root for comparison |
-| `zh` | Chinese / Korean / Vietnamese | Surname first; heavily penalised due to limited repertoire |
-
-Results are presented across four tabs:
-
-- **Candidate list**: full sortable table with surname, position, similarity score, confidence level, GRAMPS ID (when found in tree), and inferred kinship relationship
-- **By witness**: aggregated view showing how many distinct families each witness shares a surname with, and their maximum confidence level
-- **By surname**: aggregated view showing which surnames produce the most coincidences, useful for spotting dominant family networks
-- **Review**: a work queue for confirming or discarding each candidate; decisions are saved persistently to `data/confirmed_links.json`
-
-Confidence levels:
-
-- 🟢 **High**: rare surname + positional match + witness found in tree
-- 🟡 **Medium**: moderate surname + correct positional match
-- 🟠 **Low**: frequent surname or secondary-position coincidence
-- 🔴 **Very low**: hyper-frequent surname with no additional evidence
-
-Results can be exported to CSV.
-
----
-
-### Consanguinidad (Consanguinity & Inbreeding Analysis)
-
-This module computes genetic relatedness metrics from the family tree. It parses the full pedigree from the GRAMPS file and runs graph-based algorithms to find relationships and inbreeding.
-
----
-
-#### Inbreeding Coefficient (F)
-
-Calculates the **Wright inbreeding coefficient (F)** for any individual in the tree. F measures the probability that both alleles at a random locus are identical by descent. The algorithm:
-
-1. Builds a directed ancestor graph from the GRAMPS pedigree
-2. Finds all paths between parents through common ancestors
-3. Sums contributions from each common ancestor, weighted by path length and the ancestor's own F
-
-Results are displayed per person with their ancestors' contribution breakdown.
-
----
-
-#### Kinship Coefficient (Φ)
-
-Computes the **kinship coefficient (Φ)** between any two selected individuals. Φ is the probability that a random allele drawn from each person is identical by descent. Φ is then converted to **coefficient of relationship (r)** for an intuitive relatedness percentage.
-
----
-
-#### Relationship Classification
-
-Given two individuals, the module classifies their relationship using both:
-
-- **Kinship-based heuristics**: Φ thresholds for parent/child, full sibling, half-sibling, first cousin, etc.
-- **Path distance heuristics**: Generational distance through the common ancestor graph
-
-For complex pedigrees, both methods are shown and reconciled.
-
----
-
-#### Consanguineous Couples
-
-Scans all couples in the family tree and identifies pairs who are genetically related. For each consanguineous couple:
-
-- Displays their kinship coefficient and relationship classification
-- Shows the common ancestor(s) with full path
-- Renders an interactive Pyvis graph of the connecting pedigree subgraph
-- Sortable by F value, time period, or location
-
----
-
-#### Common Ancestor Finder
-
-Given two individuals, finds **all common ancestors** and the shortest paths through the pedigree connecting them. Results include:
-
-- Ancestor name, GRAMPS ID, and birth/death dates
-- Generation distance from each of the two individuals
-- Contribution to total kinship
-
----
-
-#### Pedigree Collapse Analysis
-
-Identifies individuals who appear **more than once** in a pedigree (i.e., who are both paternal and maternal ancestors). This "pedigree collapse" is a direct consequence of consanguineous marriages in earlier generations. The page shows:
-
-- Repeated ancestor list with frequency count
-- Timeline of when pedigree collapse increased or decreased in the lineage
-
----
-
-#### Interactive Pedigree Visualization
-
-Three Pyvis-rendered interactive graph views:
-
-- **Subtree view**: Expand an individual's ancestor tree up to N generations
-- **Relationship view**: Show the pedigree subgraph connecting two specific people
-- **Inbreeding colormap**: Color all individuals in the tree by their F value (gradient from white to red)
-
----
-
-#### Historical Inbreeding Trends
-
-A time-series chart of average inbreeding coefficient per generation or per decade, computed across all individuals with known birth years. Useful for identifying historical periods of increased endogamy.
-
----
-
-#### Geographic Ancestor Distribution
-
-Maps the birthplaces of an individual's ancestors across generations. Color-coded by generation depth, with lines connecting parent–child locations to reveal geographic origins and migration chains.
-
----
-
-### General (Tree Endpoints, Inconsistencies, Historical Context & Candidate Identification)
-
-This module provides four analytical sub-pages that work directly from the GRAMPS family tree data, focusing on data quality, temporal extremes, historical enrichment, and probabilistic identity resolution.
+This module provides three analytical sub-pages that work directly from the GRAMPS family tree data, focusing on data quality, temporal extremes, and historical enrichment. It is the natural entry point for any research session.
 
 ---
 
@@ -421,61 +152,272 @@ The full timeline can be exported to CSV.
 
 ---
 
-#### Identificación de candidatos — Candidate Identification
+### Testigos (Witness & Godparent Analysis)
 
-Addresses a common problem in 16th–18th century records: marriages that do not record the parents of the contracting parties. When several individuals share the same name and approximate age, this sub-page provides a systematic, probabilistic framework for ranking them as candidates.
+This module analyzes the role of witnesses and godparents (padrinos/madrinas) across baptism and marriage records. It includes 14 pages:
 
-**The core hypothesis**: witnesses tend to repeat across events within the same social and family circle. If a witness at the mystery marriage also appears at the baptism of candidate A (or at the baptism or marriage of A's siblings), that is evidence that A is the individual being sought.
+---
 
-**Candidates are entered manually** — they are not required to be in the GRAMPS tree. For each candidate you can provide:
+#### Explorar — Event Explorer
 
-- Name and surnames
-- Baptism year and place
-- Baptism witnesses (free text, one per line)
-- Any number of siblings, each with:
-  - Name, baptism year, baptism place, and baptism witnesses
-  - Marriage year, marriage place, and marriage witnesses
+Search and filter the full event dataset. Filter by witness name, event type (baptism, marriage, etc.), location, and year range. Inspect individual records and see which witnesses appear in each event.
 
-**Target marriage** is selected directly from the loaded GRAMPS tree. The app automatically extracts the witnesses recorded in the XML for that event.
+---
 
-**Typical marriage age** is computed dynamically from the tree itself — the mean and standard deviation of actual marriage ages for individuals in a matching time window and geographic area around the target event. If the local sample is too small (< 5 individuals), the window expands automatically (±30 → ±60 → ±120 years) with a note in the UI.
+#### Mapa — Geographic Map
 
-**Scoring model — six factors** combined via Bayesian likelihood ratios with a uniform prior over all candidates:
+Visualize witness activity and migration on an interactive map. Supports **9 map modes**:
 
-| Factor | Default weight | Description |
-|--------|---------------|-------------|
-| F1 — Own baptism witnesses | 35 % | Witness overlap between target marriage and candidate's own baptism |
-| F2 — Siblings' baptism witnesses | 20 % | Overlap using the union of witnesses from all siblings' baptisms |
-| F3 — Siblings' marriage witnesses | 15 % | Overlap using witnesses from siblings' marriages |
-| F4 — Temporal coherence | 15 % | Gaussian score: how close the baptism year is to the expected year (target year − typical age) |
-| F5 — Geographic coherence | 10 % | Exponential decay on Haversine distance between baptism place and marriage place |
-| F6 — Candidate surname in witnesses | 5 % | Fraction of target witnesses who share a surname with the candidate |
+- **Hotspots**: Heatmap of event density by location
+- **Connections**: Lines between places where the same witness appeared
+- **Migrations**: Arrows indicating directional movement over time
+- **By family**: Events grouped and colored by family surname
+- **Timeline**: Animated map showing how activity shifted over the years
+- **Clusters**: Geographic clustering of events
+- **Radius**: Witness activity radius estimation
+- **Comparison**: Side-by-side geographic comparison between witnesses
+- **Influence zones**: Voronoi-based territory mapping per witness
 
-Factors for which no data has been entered score `None` and do not penalise the candidate — their weight is redistributed proportionally among the active factors.
+---
 
-**Witness matching supports two match types**:
+#### Grafo — Social Network Graph
 
-- **Full-name match**: fuzzy `token_sort_ratio` ≥ configurable threshold (default 80 %). Contributes 1.0 to the overlap coefficient. Displayed as `A ↔ B (score%)`.
-- **Surname-only match**: triggered when the full-name match fails but the surname tokens match with ratio ≥ 85 %. The contribution is weighted by *surname rarity*:
-  - Hyperfrequent surnames (García, López, Fernández, Pereira, etc.) → rarity **0.15** → contribution ~0.07 (nearly negligible)
-  - Rare surnames with insufficient context (< 10 names in pool) → rarity **0.70** → contribution ~0.32 (moderate evidence — likely a sibling of the original witness)
-  - Context-estimated surnames with a large pool → rarity scales inversely with observed frequency
-  - Displayed as `A ≈ B (apellido, rareza X%)` in the match detail panel
+An interactive network graph where nodes are witnesses and edges represent co-appearances in events. Highlights:
 
-**Configuration panel** (collapsed by default):
+- **Bridge witnesses**: People whose removal would disconnect parts of the network (high betweenness centrality)
+- **Clusters**: Communities of witnesses that frequently collaborated
+- Node sizing and coloring by event count or centrality score
+- Filter by minimum edge weight or family
 
-- Fuzzy threshold slider (50–100, default 80)
-- Geographic scale slider in km (default 30 km)
-- Per-factor weight sliders (auto-normalised to sum = 1)
-- Toggle: include siblings' marriage witnesses in F3
-- Toggle: enable the surname-in-witnesses factor (F6)
+---
 
-**Results**:
+#### Timeline — Chronological View
 
-- Sortable results table with per-candidate probability and individual factor scores
-- Visual progress bars coloured green (≥ 70 %), yellow (40–70 %), or red (< 40 %)
-- Expandable detail panel per candidate showing which witnesses matched (full or surname), which did not, and for which events
-- **Narrative summary in natural language** (ES / EN): a coherent, paragraph-form account of the evidence — typical marriage age and expected birth range, per-candidate analysis with matched witnesses, temporal and geographic coherence, and a conclusion naming the most probable candidate or flagging a tie when two candidates are within 10 percentage points of each other
+An interactive chronological strip showing witness activity across time. Zoom in to specific decades, filter by witness or family, and inspect individual events by hovering.
+
+---
+
+#### Superpadrinos — Top Witnesses
+
+Ranks witnesses by total number of events. For each top witness, shows:
+
+- Full event timeline
+- Families they most commonly served
+- Geographic reach
+- Years active and longevity score
+- Activity trend (increasing, decreasing, or stable)
+
+---
+
+#### Notas — Event Notes Browser
+
+Browse and filter the notes attached to events in the GRAMPS database. Supports manual **category overrides** to reclassify notes. Categories include things like occupation references, health records, social status markers, and more.
+
+---
+
+#### Análisis — Statistical Analysis
+
+A deep-dive analytics page covering:
+
+- **Timeline analysis**: Events per year with trend lines
+- **Family pattern analysis**: Which families used the same godparents repeatedly
+- **Endogamy score**: How closed the witness network is (percentage of internal vs. external connections)
+- **Surname timeline**: Track how family surnames appear and disappear as witnesses over generations
+- **Birth order and prestige**: Correlation between a child's birth order and the social standing of their chosen godparent
+- **Stability vs. mobility**: Geographic mobility index for each witness
+
+---
+
+#### Identidad bayesiana — Bayesian Identity Resolution
+
+Uses a Bayesian scoring model to compute the probability that two witness records refer to the same individual. The score combines:
+
+- **Name similarity** (fuzzy string matching via rapidfuzz + jellyfish)
+- **Temporal overlap**: Are the active years compatible?
+- **Geographic proximity**: How close were the events in space?
+- **Family overlap**: Did they appear for the same families?
+
+Results are ranked by probability. High-confidence matches can be confirmed directly from this page.
+
+---
+
+#### Confirmar coincidencias — Confirm Identity Matches
+
+When the same person appears under slightly different name spellings, this page presents candidate pairs for user review. For each candidate pair, you can:
+
+- **Confirm**: Mark two records as the same person
+- **Reject**: Mark them as distinct
+- Confirmations are saved persistently to `data/confirmed_links.json` and propagate throughout all other pages
+
+---
+
+#### Pendientes — Pending Cases
+
+Shows all witness records that have not yet been confirmed or rejected. Useful as a work queue to ensure no ambiguous identity cases go unresolved before exporting a final report.
+
+---
+
+#### Trayectoria vital — Life Trajectory
+
+For a selected witness, reconstructs a probable life trajectory:
+
+- Estimated birth and death year range
+- Map of locations visited over their lifetime
+- Events annotated on a personal timeline
+- Family connections discovered through godparent appearances
+
+---
+
+#### Posibles familiares — Possible Relatives by Surname Coincidence
+
+Detects events where a confirmed witness shares a surname with the event subject, flagging them as possible relatives for further study. The scoring model accounts for:
+
+- **Surname position**: paternal (1st) vs. maternal (2nd) surnames are weighted differently — in Spanish records witnesses can be grandparents or uncles, so the maternal surname of a witness may match the paternal surname of the subject
+- **Surname frequency**: hyper-frequent surnames (García, López, Smith…) receive a penalty, reducing false positives
+- **Presence in the GRAMPS tree**: witnesses found in the family tree receive a score boost; those with a confirmed kinship path receive a larger one
+- **Fuzzy matching**: historical spelling variation is handled with an 82 % similarity threshold via rapidfuzz
+
+**Surname systems supported** (selectable in the sidebar):
+
+| Code | System | Key characteristic |
+|------|--------|--------------------|
+| `es` | Spanish | Two surnames, paternal + maternal (weight 1.0 / 0.75) |
+| `pt` | Portuguese | Two surnames, historical maternal-paternal order |
+| `en` | English / Anglo-Saxon | Single patrilineal surname |
+| `fr` | French | Single surname with noble particles (de, du, de la…) |
+| `de` | German / Dutch | Single surname with particles (von, van, zu…) |
+| `it` | Italian | Single surname with particles (di, del, della…) |
+| `ar` | Arabic | Patronymic chain (ibn/bint); compared by chain position |
+| `ru` | Russian / Slavic | Gendered endings normalised to root for comparison |
+| `zh` | Chinese / Korean / Vietnamese | Surname first; heavily penalised due to limited repertoire |
+
+Results are presented across four tabs:
+
+- **Candidate list**: full sortable table with surname, position, similarity score, confidence level, GRAMPS ID (when found in tree), and inferred kinship relationship
+- **By witness**: aggregated view showing how many distinct families each witness shares a surname with, and their maximum confidence level
+- **By surname**: aggregated view showing which surnames produce the most coincidences, useful for spotting dominant family networks
+- **Review**: a work queue for confirming or discarding each candidate; decisions are saved persistently to `data/confirmed_links.json`
+
+Confidence levels:
+
+- 🟢 **High**: rare surname + positional match + witness found in tree
+- 🟡 **Medium**: moderate surname + correct positional match
+- 🟠 **Low**: frequent surname or secondary-position coincidence
+- 🔴 **Very low**: hyper-frequent surname with no additional evidence
+
+Results can be exported to CSV.
+
+---
+
+#### Testigos en árbol — Witnesses in the Family Tree
+
+Links witnesses from the event records back to named individuals in the GRAMPS family tree. Uses a scoring system that weighs:
+
+- Name match quality
+- Date compatibility
+- Place overlap
+- Existing confirmations
+
+Shows matched individuals with their GRAMPS person ID and confidence score.
+
+---
+
+#### Informe — Report Export
+
+Generates a narrative report for a selected witness or the full dataset. Export formats include:
+
+- **HTML**: Formatted printable document with embedded charts
+- **Markdown**: Plain-text structured summary
+- **JSON**: Machine-readable data export
+
+Reports include event tables, geographic summaries, family connections, and network statistics.
+
+---
+
+### Consanguinidad (Consanguinity & Inbreeding Analysis)
+
+This module computes genetic relatedness metrics from the family tree. It parses the full pedigree from the GRAMPS file and runs graph-based algorithms to find relationships and inbreeding.
+
+---
+
+#### Inbreeding Coefficient (F)
+
+Calculates the **Wright inbreeding coefficient (F)** for any individual in the tree. F measures the probability that both alleles at a random locus are identical by descent. The algorithm:
+
+1. Builds a directed ancestor graph from the GRAMPS pedigree
+2. Finds all paths between parents through common ancestors
+3. Sums contributions from each common ancestor, weighted by path length and the ancestor's own F
+
+Results are displayed per person with their ancestors' contribution breakdown.
+
+---
+
+#### Kinship Coefficient (Φ)
+
+Computes the **kinship coefficient (Φ)** between any two selected individuals. Φ is the probability that a random allele drawn from each person is identical by descent. Φ is then converted to **coefficient of relationship (r)** for an intuitive relatedness percentage.
+
+---
+
+#### Relationship Classification
+
+Given two individuals, the module classifies their relationship using both:
+
+- **Kinship-based heuristics**: Φ thresholds for parent/child, full sibling, half-sibling, first cousin, etc.
+- **Path distance heuristics**: Generational distance through the common ancestor graph
+
+For complex pedigrees, both methods are shown and reconciled.
+
+---
+
+#### Consanguineous Couples
+
+Scans all couples in the family tree and identifies pairs who are genetically related. For each consanguineous couple:
+
+- Displays their kinship coefficient and relationship classification
+- Shows the common ancestor(s) with full path
+- Renders an interactive Pyvis graph of the connecting pedigree subgraph
+- Sortable by F value, time period, or location
+
+---
+
+#### Common Ancestor Finder
+
+Given two individuals, finds **all common ancestors** and the shortest paths through the pedigree connecting them. Results include:
+
+- Ancestor name, GRAMPS ID, and birth/death dates
+- Generation distance from each of the two individuals
+- Contribution to total kinship
+
+---
+
+#### Pedigree Collapse Analysis
+
+Identifies individuals who appear **more than once** in a pedigree (i.e., who are both paternal and maternal ancestors). This "pedigree collapse" is a direct consequence of consanguineous marriages in earlier generations. The page shows:
+
+- Repeated ancestor list with frequency count
+- Timeline of when pedigree collapse increased or decreased in the lineage
+
+---
+
+#### Interactive Pedigree Visualization
+
+Three Pyvis-rendered interactive graph views:
+
+- **Subtree view**: Expand an individual's ancestor tree up to N generations
+- **Relationship view**: Show the pedigree subgraph connecting two specific people
+- **Inbreeding colormap**: Color all individuals in the tree by their F value (gradient from white to red)
+
+---
+
+#### Historical Inbreeding Trends
+
+A time-series chart of average inbreeding coefficient per generation or per decade, computed across all individuals with known birth years. Useful for identifying historical periods of increased endogamy.
+
+---
+
+#### Geographic Ancestor Distribution
+
+Maps the birthplaces of an individual's ancestors across generations. Color-coded by generation depth, with lines connecting parent–child locations to reveal geographic origins and migration chains.
 
 ---
 
@@ -608,7 +550,71 @@ Select any individual in the tree and a generation depth (2–12). The module tr
 
 ### Family Completion Engine
 
-This module automates the most time-consuming task in pre-modern genealogical research: finding the missing parents of individuals whose marriage records do not name them. It runs a batch Bayesian analysis over the entire tree, detects every spouse with no known parents, and ranks potential father or mother candidates from within the tree itself.
+This module covers two complementary approaches to finding missing parents in pre-modern genealogical records: a **manual mode** for investigating a specific case step by step, and a **batch engine** that automates the search across the entire tree.
+
+---
+
+#### Identificación de candidatos — Candidate Identification (manual mode)
+
+Addresses a common problem in 16th–18th century records: marriages that do not record the parents of the contracting parties. When several individuals share the same name and approximate age, this sub-page provides a systematic, probabilistic framework for ranking them as candidates.
+
+**The core hypothesis**: witnesses tend to repeat across events within the same social and family circle. If a witness at the mystery marriage also appears at the baptism of candidate A (or at the baptism or marriage of A's siblings), that is evidence that A is the individual being sought.
+
+**Candidates are entered manually** — they are not required to be in the GRAMPS tree. For each candidate you can provide:
+
+- Name and surnames
+- Baptism year and place
+- Baptism witnesses (free text, one per line)
+- Any number of siblings, each with:
+  - Name, baptism year, baptism place, and baptism witnesses
+  - Marriage year, marriage place, and marriage witnesses
+
+**Target marriage** is selected directly from the loaded GRAMPS tree. The app automatically extracts the witnesses recorded in the XML for that event.
+
+**Typical marriage age** is computed dynamically from the tree itself — the mean and standard deviation of actual marriage ages for individuals in a matching time window and geographic area around the target event. If the local sample is too small (< 5 individuals), the window expands automatically (±30 → ±60 → ±120 years) with a note in the UI.
+
+**Scoring model — six factors** combined via Bayesian likelihood ratios with a uniform prior over all candidates:
+
+| Factor | Default weight | Description |
+|--------|---------------|-------------|
+| F1 — Own baptism witnesses | 35 % | Witness overlap between target marriage and candidate's own baptism |
+| F2 — Siblings' baptism witnesses | 20 % | Overlap using the union of witnesses from all siblings' baptisms |
+| F3 — Siblings' marriage witnesses | 15 % | Overlap using witnesses from siblings' marriages |
+| F4 — Temporal coherence | 15 % | Gaussian score: how close the baptism year is to the expected year (target year − typical age) |
+| F5 — Geographic coherence | 10 % | Exponential decay on Haversine distance between baptism place and marriage place |
+| F6 — Candidate surname in witnesses | 5 % | Fraction of target witnesses who share a surname with the candidate |
+
+Factors for which no data has been entered score `None` and do not penalise the candidate — their weight is redistributed proportionally among the active factors.
+
+**Witness matching supports two match types**:
+
+- **Full-name match**: fuzzy `token_sort_ratio` ≥ configurable threshold (default 80 %). Contributes 1.0 to the overlap coefficient. Displayed as `A ↔ B (score%)`.
+- **Surname-only match**: triggered when the full-name match fails but the surname tokens match with ratio ≥ 85 %. The contribution is weighted by *surname rarity*:
+  - Hyperfrequent surnames (García, López, Fernández, Pereira, etc.) → rarity **0.15** → contribution ~0.07 (nearly negligible)
+  - Rare surnames with insufficient context (< 10 names in pool) → rarity **0.70** → contribution ~0.32 (moderate evidence — likely a sibling of the original witness)
+  - Context-estimated surnames with a large pool → rarity scales inversely with observed frequency
+  - Displayed as `A ≈ B (apellido, rareza X%)` in the match detail panel
+
+**Configuration panel** (collapsed by default):
+
+- Fuzzy threshold slider (50–100, default 80)
+- Geographic scale slider in km (default 30 km)
+- Per-factor weight sliders (auto-normalised to sum = 1)
+- Toggle: include siblings' marriage witnesses in F3
+- Toggle: enable the surname-in-witnesses factor (F6)
+
+**Results**:
+
+- Sortable results table with per-candidate probability and individual factor scores
+- Visual progress bars coloured green (≥ 70 %), yellow (40–70 %), or red (< 40 %)
+- Expandable detail panel per candidate showing which witnesses matched (full or surname), which did not, and for which events
+- **Narrative summary in natural language** (ES / EN): a coherent, paragraph-form account of the evidence — typical marriage age and expected birth range, per-candidate analysis with matched witnesses, temporal and geographic coherence, and a conclusion naming the most probable candidate or flagging a tie when two candidates are within 10 percentage points of each other
+
+---
+
+#### Completion Engine (batch mode)
+
+The batch engine automates the most time-consuming task in pre-modern genealogical research: finding the missing parents of individuals whose marriage records do not name them. It runs a Bayesian analysis over the entire tree, detects every spouse with no known parents, and ranks potential father or mother candidates from within the tree itself.
 
 ---
 

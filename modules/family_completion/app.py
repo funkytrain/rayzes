@@ -26,6 +26,7 @@ from modules.general.app import (
     _compute_typical_marriage_age,
     _generate_narrative,
     _parse_cand_extra,
+    page_identificacion_candidatos,
 )
 
 DATA_DIR = Path("data")
@@ -676,18 +677,27 @@ def render_sidebar():
             st.session_state["shared_gramps_name"] = uploaded.name
 
     st.sidebar.markdown("---")
-    st.sidebar.slider(
-        t("fce_min_prob_label"),
-        min_value=0.10, max_value=0.95, value=0.35, step=0.05,
-        key="fce_min_prob",
+    st.sidebar.radio(
+        t("fce_subpage_selector"),
+        [t("fce_subpage_engine"), t("gen_subpage_candidatos")],
+        key="fce_active_subpage",
     )
-    st.sidebar.checkbox(t("fce_only_witnesses"), value=False, key="fce_only_witnesses")
-    st.sidebar.selectbox(
-        t("fce_role_filter_label"),
-        options=["", "father", "mother"],
-        format_func=lambda x: {"": t("fce_role_all"), "father": t("fce_role_father"), "mother": t("fce_role_mother")}.get(x, x),
-        key="fce_role_filter",
-    )
+    st.sidebar.markdown("---")
+
+    # Controles del motor batch (solo visibles en esa subpágina)
+    if st.session_state.get("fce_active_subpage", t("fce_subpage_engine")) == t("fce_subpage_engine"):
+        st.sidebar.slider(
+            t("fce_min_prob_label"),
+            min_value=0.10, max_value=0.95, value=0.35, step=0.05,
+            key="fce_min_prob",
+        )
+        st.sidebar.checkbox(t("fce_only_witnesses"), value=False, key="fce_only_witnesses")
+        st.sidebar.selectbox(
+            t("fce_role_filter_label"),
+            options=["", "father", "mother"],
+            format_func=lambda x: {"": t("fce_role_all"), "father": t("fce_role_father"), "mother": t("fce_role_mother")}.get(x, x),
+            key="fce_role_filter",
+        )
 
 
 # ============================================================
@@ -698,6 +708,11 @@ def render_page():
     content_bytes = st.session_state.get("shared_gramps_bytes")
     if not content_bytes:
         st.info(t("sidebar_gramps_uploader"))
+        return
+
+    active_subpage = st.session_state.get("fce_active_subpage", t("fce_subpage_engine"))
+    if active_subpage == t("gen_subpage_candidatos"):
+        page_identificacion_candidatos(content_bytes)
         return
 
     st.title(t("section_family_completion"))

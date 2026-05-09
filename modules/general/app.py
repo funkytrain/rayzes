@@ -2891,7 +2891,7 @@ def render_sidebar():
     st.sidebar.radio(
         t("gen_subpage_selector"),
         [t("gen_subpage_extremos"), t("gen_subpage_inconsistencias"),
-         t("gen_subpage_contexto"), t("gen_subpage_candidatos")],
+         t("gen_subpage_contexto")],
         key='gen_active_subpage_label',
     )
 
@@ -2910,7 +2910,5 @@ def render_page():
         page_inconsistencias(content_bytes)
     elif active == t("gen_subpage_contexto"):
         page_contexto_historico(content_bytes)
-    elif active == t("gen_subpage_candidatos"):
-        page_identificacion_candidatos(content_bytes)
     else:
         page_extremos(content_bytes)
