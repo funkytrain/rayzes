@@ -15,8 +15,8 @@ _lang_display = st.sidebar.selectbox(
 set_lang("es" if _lang_display == "Español" else "en")
 st.sidebar.markdown("---")
 
-SECTION_KEYS = ["testigos", "consanguinidad", "general", "adn"]
-SECTION_LABELS = [t("section_testigos"), t("section_consanguinidad"), t("section_general"), t("section_adn")]
+SECTION_KEYS = ["testigos", "consanguinidad", "general", "adn", "migration"]
+SECTION_LABELS = [t("section_testigos"), t("section_consanguinidad"), t("section_general"), t("section_adn"), t("section_migration")]
 
 if "active_section_key" not in st.session_state:
     st.session_state["active_section_key"] = SECTION_KEYS[0]
@@ -47,6 +47,8 @@ elif active_section == "general":
     from modules.general import render_sidebar, render_page
 elif active_section == "adn":
     from modules.adn import render_sidebar, render_page
+elif active_section == "migration":
+    from modules.migration import render_sidebar, render_page
 
 render_sidebar()
 render_page()

@@ -13,6 +13,8 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [Testigos (Witness & Godparent Analysis)](#testigos-witness--godparent-analysis)
   - [Consanguinidad (Consanguinity & Inbreeding Analysis)](#consanguinidad-consanguinity--inbreeding-analysis)
   - [General (Tree Endpoints, Inconsistencies, Historical Context & Candidate Identification)](#general-tree-endpoints-inconsistencies-historical-context--candidate-identification)
+  - [ADN & Genetics](#adn--genetics)
+  - [Migration Intelligence](#migration-intelligence)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
 - [Tech Stack](#tech-stack)
@@ -472,6 +474,133 @@ Factors for which no data has been entered score `None` and do not penalise the 
 - Visual progress bars coloured green (≥ 70 %), yellow (40–70 %), or red (< 40 %)
 - Expandable detail panel per candidate showing which witnesses matched (full or surname), which did not, and for which events
 - **Narrative summary in natural language** (ES / EN): a coherent, paragraph-form account of the evidence — typical marriage age and expected birth range, per-candidate analysis with matched witnesses, temporal and geographic coherence, and a conclusion naming the most probable candidate or flagging a tie when two candidates are within 10 percentage points of each other
+
+---
+
+### ADN & Genetics
+
+This module applies population genetics concepts to the GRAMPS pedigree, bridging genealogical research with modern genetic genealogy. It comprises three sub-pages accessible as tabs.
+
+---
+
+#### Fundadores — Founder Analysis
+
+Identifies the **genealogical founders** of the tree: individuals with no known parents who appear as root nodes in the ancestor graph. For each founder, the module computes how much of the genetic material of any selected individual (or the whole pedigree) can be traced back to that founder.
+
+**Individual view**: select any person in the tree and compute their founder contributions. Each founder's contribution is calculated by summing `0.5^(path_length − 1)` over all independent paths through the pedigree (accounting for pedigree collapse). Results include:
+
+- An interactive pie chart showing the proportional contribution of each founder, plus an "unknown" slice representing ancestry not yet accounted for in the tree
+- A sortable table with founder name, GRAMPS ID, and contribution percentage
+- CSV export
+
+**Pedigree-wide view**: runs the founder analysis across every non-founder individual in the tree and aggregates per-founder statistics:
+
+- Number of descendants
+- Average and maximum contribution across all descendants
+- CSV export of the complete table
+
+---
+
+#### ADN compartido — Shared DNA Prediction
+
+Predicts the expected shared DNA (in centimorgans, cM) between any two individuals in the tree, using the **Shared cM Project 4.0** reference data.
+
+**How it works**:
+
+1. Computes the **kinship coefficient (Φ)** between the two selected individuals using the full pedigree graph (identical to the algorithm used in the Consanguinity module)
+2. Converts Φ to the **coefficient of relationship (R = 2Φ)**
+3. Classifies the relationship by tracing direct ancestry paths and finding common ancestors, then mapping generational distances to a relationship category
+4. Looks up the corresponding cM range (minimum, average, maximum) from the Shared cM Project 4.0 table
+
+**Relationship categories supported** (16 total):
+
+| Category | Avg. cM |
+|---|---|
+| Parent — Child | 3 479 |
+| Full sibling | 2 543 |
+| Half sibling / Grandparent | ~1 760 |
+| Aunt/Uncle | 1 741 |
+| Great-grandparent | 881 |
+| 1st cousin | 866 |
+| 1st cousin once removed | 433 |
+| 2nd cousin | 229 |
+| 3rd cousin | 74 |
+| 4th cousin | 35 |
+| Distant relative | ~12 |
+
+Results display:
+- Three metrics: Φ, R, and the classified relationship label
+- A bar chart showing min/avg/max cM range
+- A warning if no common ancestors were found in the tree (meaning the estimate relies solely on the kinship coefficient with no pedigree path confirmation)
+- An expandable full reference table with all 16 relationship categories
+
+> **Note:** Predictions assume a complete and accurate pedigree. Incomplete trees will underestimate kinship and produce lower cM ranges than actual DNA tests would show.
+
+---
+
+#### Línea materna / paterna — Matrilineal & Patrilineal Lineage Tracing
+
+Traces the unbroken **maternal line** (mother → maternal grandmother → maternal great-grandmother…) or **paternal line** (father → paternal grandfather…) for any selected individual. These correspond to the genetic lines transmitted via mitochondrial DNA (mtDNA) and the non-recombining Y chromosome (Y-DNA) respectively.
+
+For each line, the module provides:
+
+- **List of ancestors** in order, with name, GRAMPS ID, birth year, and birth place
+- **Generation count** (how far back the line extends before hitting a missing parent or unknown sex)
+- **Stop reason**: why the trace ended
+  - *No parent recorded*: the furthest-back ancestor has no parents in the tree
+  - *Sex unknown*: the trace hit an individual whose sex is not recorded in GRAMPS, breaking the line
+  - *Maximum depth reached*: the configurable generation limit was hit (default 20, adjustable in the sidebar up to 20)
+
+**Visualizations**:
+
+- **Timeline chart**: plots birth years along the line, generation by generation, so gaps and temporal jumps are immediately visible
+- **Geographic map** (OpenStreetMap): renders each ancestor as a point with generation-indexed coloring, connected by lines in chronological order — useful for tracking migration patterns along a single lineage
+
+**Sidebar control**: a global **max generations** slider (3–20, default 12) applies to all three sub-pages, controlling the depth of ancestor graph traversal.
+
+---
+
+### Migration Intelligence
+
+This module traces how surnames and ancestral lineages moved across geography and time. It processes all individuals in the GRAMPS tree who have a known birth or baptism year and a geocoded place, and builds period-by-period migration trajectories.
+
+---
+
+#### Tab A — By Surname
+
+Select one or more surnames to visualise their geographic trajectory. For each surname, the module:
+
+1. Collects all tree members bearing that surname (first surname, normalised) who have known coordinates and year
+2. Groups them into configurable time periods (10–100 years, default 25)
+3. Computes the **geographic centroid** of each period (mean lat/lon of all individuals in that slot)
+4. Draws lines connecting consecutive centroids on an OpenStreetMap base map
+5. Sizes each point proportionally to the number of people it represents
+
+**Distance table**: below the map, a summary table shows for each selected surname the total distance travelled (sum of Haversine distances between consecutive centroids), average speed in km/year, number of periods, and total time span.
+
+**Historical correlation**: if historical event data has been loaded in the General → Historical Context sub-page, the app displays the events recorded for each place during the corresponding period — letting the researcher connect demographic movements with droughts, plagues, wars, or administrative changes.
+
+**Spelling variant detection**: surnames that differ from a selected one by ≤ 2 characters (Levenshtein distance) are flagged with a warning, prompting the user to add the variants to the filter.
+
+**Dispersion and unrelated-branch analysis**: for every selected surname the module automatically evaluates whether all its bearers in the tree plausibly belong to the same family line, or whether the surname is common enough that different, unconnected families share it:
+
+- **Geographic clustering**: individuals are grouped into geographic clusters (greedy algorithm, 80 km radius). Surnames whose clusters are more than 300 km apart trigger an alert.
+- **Family connectivity check**: for each pair of clusters, the app searches the GRAMPS family records for any parent–child or spousal link that bridges the two groups. If no such link is found, the clusters are declared unconnected.
+- **Severity levels**:
+  - ⛔ **Likely unrelated** — high dispersion + no family link detected between distant groups. The alert names each unconnected pair ("Sevilla (12 persons) ↔ Burgos (5 persons): no family relationship detected") and recommends analysing each group separately.
+  - ⚠️ **Review recommended** — high dispersion but at least one family link bridges the clusters. The movement may reflect genuine migration, but manual verification is advised.
+  - No alert — dispersion is within normal migration range.
+
+---
+
+#### Tab B — By Lineage
+
+Select any individual in the tree and a generation depth (2–12). The module traces all direct ancestors up to that depth who have geocoded birthplaces and renders them on an interactive map:
+
+- Points are **colour-coded by generation** (same palette as the Consanguinity geographic view, imported from the shared `geo_viz` module)
+- **Directional arrows** connect parent and child locations, oriented according to the true geodesic bearing
+- If historical event data is loaded, **orange dots** are overlaid on each ancestor's location marking events from that place and era, with the description shown on hover
+- A **CSV download** exports the full ancestor list with name, generation, place, and coordinates (ancestors without coordinates are included with empty lat/lon fields)
 
 ---
 
