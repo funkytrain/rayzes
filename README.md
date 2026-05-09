@@ -15,6 +15,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [General (Tree Endpoints, Inconsistencies, Historical Context & Candidate Identification)](#general-tree-endpoints-inconsistencies-historical-context--candidate-identification)
   - [ADN & Genetics](#adn--genetics)
   - [Migration Intelligence](#migration-intelligence)
+  - [Family Completion Engine](#family-completion-engine)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
 - [Tech Stack](#tech-stack)
@@ -604,6 +605,82 @@ Select any individual in the tree and a generation depth (2–12). The module tr
 
 ---
 
+### Family Completion Engine
+
+This module automates the most time-consuming task in pre-modern genealogical research: finding the missing parents of individuals whose marriage records do not name them. It runs a batch Bayesian analysis over the entire tree, detects every spouse with no known parents, and ranks potential father or mother candidates from within the tree itself.
+
+---
+
+#### How it works
+
+For each marriage in the GRAMPS tree where at least one spouse has no known parents, the engine:
+
+1. Extracts the **witnesses recorded in the marriage act** from the GRAMPS XML — the same witness data used by the Candidate Identification sub-page in the General module
+2. Searches the tree for **parent candidates** matching the orphan's surname, expected birth year range (derived from the tree's own marriage-age statistics), and geographic area (≤ 50 km)
+3. Scores each candidate using the same **Bayesian likelihood-ratio model** as the manual Candidate Identification page, extended with a genealogical factor specific to this batch mode:
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| F1 — Marriage witnesses vs. candidate's baptism witnesses | 35 % | Overlap between the marriage act witnesses and the witnesses at the candidate's own baptism |
+| F2 — Marriage witnesses vs. siblings' baptism witnesses | 20 % | Overlap with the union of witnesses from all of the candidate's siblings' baptisms |
+| F3 — Marriage witnesses vs. siblings' marriage witnesses | 15 % | Overlap with witnesses from the candidate's siblings' marriages |
+| F4 — Temporal coherence | 15 % | Gaussian score: how close the candidate's birth year is to the expected year (marriage year − typical parent age) |
+| F5 — Geographic coherence | 10 % | Exponential decay on Haversine distance between candidate's baptism place and the marriage place |
+| F6 — Candidate surname in witnesses | 5 % | Fraction of marriage witnesses who share a surname with the candidate |
+| F7 — Generational witness overlap | 15 % | Takes the best of two sub-signals: (a) overlap between the orphan's own baptism witnesses and the candidate's baptism witnesses; (b) overlap between the baptism witnesses of the orphan's *children* and the candidate's baptism witnesses — exploiting the common practice of grandparents acting as godparents of their grandchildren |
+
+Factors with no available data score `None` and do not penalise the candidate — their weight is redistributed proportionally among the active factors. A uniform prior over all candidates is applied after individual scoring.
+
+**Typical parent age** is derived dynamically from the tree, using the same expanding-window algorithm as the manual identification page: it first tries a ±30 year window around the target marriage year, then ±60, then ±120 if the local sample is too small (< 5 individuals per sex).
+
+---
+
+#### Three-tab interface
+
+**Tab 1 — Summary**
+
+Four headline metrics computed over the full batch:
+- Total orphaned spouses analysed
+- Number with at least one candidate found
+- Number of high-confidence cases (top candidate probability ≥ 65 %)
+- Number of cases with no baptism witnesses (low-evidence mode)
+
+A warning banner flags the low-evidence count, since without witnesses only F4 and F5 are active.
+
+**Tab 2 — Results**
+
+A scrollable, fully sortable table showing all results that pass the active sidebar filters. Columns include orphan name, marriage ID, year, role sought (father / mother), top candidate name, probability, and an evidence quality indicator.
+
+A **search box** narrows the table instantly by any fragment of the orphan's name, their GRAMPS individual ID, or the marriage family ID. When the filtered set has 50 or fewer entries, a dropdown also appears for direct case selection.
+
+Clicking any row selects the case and navigates to the Detail tab. The full table can be exported to CSV.
+
+**Tab 3 — Detail**
+
+For the selected case, shows:
+- The marriage act witnesses, the orphan's own baptism witnesses (if any), and the baptism witnesses of the orphan's children (the F7 signal sources)
+- A **natural-language narrative** (ES / EN) explaining the evidence: typical marriage age and expected birth range, per-candidate witness matches, temporal and geographic coherence, and a conclusion naming the most probable parent or flagging a tie
+- A candidate table with per-factor scores including F7 (with a breakdown of how many matches came from the orphan's baptism vs. the children's baptisms)
+- **Save to confirmed results** / **Remove saved** buttons: confirmed cases are written to `data/family_completion_results.json` and will be used as input for the Write-back to GRAMPS module when it becomes available. Re-running the analysis does not overwrite this file — the batch lives only in the session, and only your manually confirmed cases persist on disk
+
+---
+
+#### Sidebar filters
+
+- **Minimum probability** slider (10 %–95 %, default 35 %): hides cases where the top candidate falls below the threshold
+- **Only with witnesses** checkbox: restricts results to cases where the marriage act has at least one recorded witness
+- **Role filter**: show only cases where the missing parent is the father, or only the mother, or both
+
+---
+
+#### Persistent data
+
+| File | Purpose |
+|---|---|
+| `data/family_completion_results.json` | Manually confirmed parent–child candidate links, consumed by the future Write-back module |
+
+---
+
 ## Getting Started
 
 ### Requirements
@@ -662,6 +739,7 @@ The following files in `data/` are created and updated automatically as you use 
 | `gen_record_dates.json` | User-defined civil/parish record coverage ranges per place |
 | `dismissed_inconsistencies.json` | Inconsistencies manually dismissed as false positives |
 | `historical/<place>.json` | Historical events uploaded per municipality for the Historical Context sub-page |
+| `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine |
 
 These files persist between sessions. Back them up if you want to preserve your review work.
 
