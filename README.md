@@ -17,6 +17,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [Migration Intelligence](#migration-intelligence)
   - [Family Completion Engine](#family-completion-engine) *(includes manual Candidate Identification)*
   - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
+  - [AI Genealogy Assistant (RAG)](#ai-genealogy-assistant-rag)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
 - [Tech Stack](#tech-stack)
@@ -746,6 +747,79 @@ Before adding any note or tag, the module checks whether the target person or fa
 
 ---
 
+### AI Genealogy Assistant (RAG)
+
+This module provides a local, privacy-preserving AI chat interface over your genealogical data. It requires no cloud services — all processing runs locally using a compatible LLM server such as [llama-swap](https://github.com/mostlygeek/llama-swap) with any OpenAI-compatible API.
+
+---
+
+#### How it works
+
+1. When you navigate to the **AI Assistant** section, the app automatically indexes your loaded `.gramps` file and any additional documents you upload. Each person, family, and event with notes or witnesses becomes a searchable chunk.
+2. When you ask a question, the system retrieves the most relevant chunks (by TF-IDF keyword search, or semantic embedding search if your LLM server supports `/v1/embeddings`) and sends them as context to the LLM along with your question.
+3. The LLM answers using only the provided context and is instructed not to invent data absent from your records.
+
+---
+
+#### Pre-computed tree statistics
+
+In addition to the chunk retrieval, the assistant always injects a **global statistics block** computed at index build time. This enables accurate answers to aggregate questions that no retrieval system could otherwise answer, such as:
+
+- Who is the oldest known ancestor and when were they born?
+- What was the average age difference between spouses at marriage in the 18th century?
+- What is the average lifespan recorded in the tree, broken down by century?
+- What is the estimated infant mortality rate in the dataset?
+- What was the average number of children per family? What was the largest family?
+- How long on average was the gap between consecutive siblings?
+- Which individuals married more than once?
+- What percentage of people have no recorded birth year (data completeness)?
+- What were the most frequent birth and death places?
+- What fraction of people died in a different place from where they were born?
+
+The statistics block is recalculated every time the index is rebuilt and covers: population counts by sex, date ranges, oldest and most recent individuals, top surnames, top birth and death places, lifespan by century, infant mortality, family size distribution, interbirth intervals, remarriage counts, marriage age by sex and century, age difference at marriage by place, and data completeness indicators.
+
+---
+
+#### Uploading additional documents
+
+You can upload `.pdf` and `.txt` documents alongside the `.gramps` file (e.g. transcribed parish records, historical context documents, research notes). All documents are indexed together with the GRAMPS data. The index rebuilds automatically whenever the set of uploaded files changes.
+
+---
+
+#### Configuration
+
+All settings are in the sidebar:
+
+| Setting | Default | Description |
+|---|---|---|
+| LLM server URL | `http://127.0.0.1:9292/v1` | Base URL of any OpenAI-compatible API (llama-swap, Ollama, LM Studio…) |
+| Model name | `qwen3-14b` | Model identifier sent in the request |
+| Top-K | 5 | Number of chunks retrieved per question |
+| Max context tokens | 3000 | Total token budget for context + history |
+
+**Top-K** controls how many text fragments are retrieved and sent to the LLM. Higher values give the model more context for broad questions but slow down responses and may introduce irrelevant content for specific ones. 5–8 works well for person/family lookups; 10–15 is better for open-ended questions.
+
+**Max context tokens** is the total token budget for the message sent to the LLM (system prompt + statistics block + retrieved chunks + conversation history). Increase this if the model seems to forget earlier turns in a long conversation. Keep it well below your model's context window limit.
+
+---
+
+#### Index persistence
+
+The search index is saved to `data/rag_index/` and reused across sessions. It is automatically rebuilt if:
+- The `.gramps` file has changed (detected via MD5 hash)
+- The set of uploaded documents has changed (detected by filename list)
+- You press the **🔄 Rebuild index** button manually
+
+---
+
+#### Requirements
+
+- A locally running LLM server with an OpenAI-compatible API (tested with llama-swap + Qwen3-14B / Qwen3-8B GGUF models)
+- Python packages: `pypdf>=4.0`, `rank-bm25>=0.2.2` (installed automatically via `requirements.txt`)
+- No GPU required for the TF-IDF retrieval path; a GPU is only needed to run the LLM itself
+
+---
+
 ## Getting Started
 
 ### Requirements
@@ -805,6 +879,7 @@ The following files in `data/` are created and updated automatically as you use 
 | `dismissed_inconsistencies.json` | Inconsistencies manually dismissed as false positives; dismissed items are excluded from Export tags |
 | `historical/<place>.json` | Historical events uploaded per municipality for the Historical Context sub-page |
 | `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine; fed into Export candidate notes |
+| `rag_index/` | Search index for the AI Assistant (chunks, TF-IDF matrix, optional embeddings, pre-computed statistics); rebuilt automatically when source data changes |
 
 These files persist between sessions. Back them up if you want to preserve your review work.
 
@@ -837,3 +912,4 @@ The app expects the file to contain people, families, events, and places. Witnes
 | Visualization | plotly, matplotlib, seaborn |
 | Scientific computing | scipy |
 | Report templating | Jinja2, pdfkit |
+| AI / RAG | scikit-learn (TF-IDF), pypdf, rank-bm25, requests |
