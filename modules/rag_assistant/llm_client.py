@@ -23,7 +23,7 @@ def chat_completion(
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]["content"] or ""
     except requests.exceptions.ConnectionError:
         raise RuntimeError(f"No se pudo conectar al servidor LLM en {base_url}. ¿Está llama-swap activo?")
     except requests.exceptions.Timeout:
