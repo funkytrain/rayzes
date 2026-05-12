@@ -18,6 +18,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [Family Completion Engine](#family-completion-engine) *(includes manual Candidate Identification)*
   - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
   - [AI Genealogy Assistant (RAG)](#ai-genealogy-assistant-rag)
+- [AI Integration across modules](#ai-integration-across-modules)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
 - [Tech Stack](#tech-stack)
@@ -151,11 +152,16 @@ The timeline is scoped to a relevant window: it starts **10 years before the ind
 
 The full timeline can be exported to CSV.
 
+**🤖 AI Historical Summary** *(requires local LLM)*: after the timeline, an expandable panel lets you optionally upload one or more historical PDF or TXT documents about the municipality (e.g. local history books, parish records transcriptions). The AI assistant generates a contextualised narrative of the individual's or family's life, weaving together their personal events with the historical events from the documents. The LLM configuration (URL, model, and inference parameters) is shown directly in the sidebar when this sub-page is active.
+
 ---
 
 ### Testigos (Witness & Godparent Analysis)
 
-This module analyzes the role of witnesses and godparents (padrinos/madrinas) across baptism and marriage records. It includes 14 pages:
+This module analyzes the role of witnesses and godparents (padrinos/madrinas) across baptism and marriage records. It includes 14 pages.
+
+If a `.gramps` file is already loaded in any other section, Testigos picks it up automatically — no re-upload is needed when switching sections.
+
 
 ---
 
@@ -611,6 +617,8 @@ Factors for which no data has been entered score `None` and do not penalise the 
 - Expandable detail panel per candidate showing which witnesses matched (full or surname), which did not, and for which events
 - **Narrative summary in natural language** (ES / EN): a coherent, paragraph-form account of the evidence — typical marriage age and expected birth range, per-candidate analysis with matched witnesses, temporal and geographic coherence, and a conclusion naming the most probable candidate or flagging a tie when two candidates are within 10 percentage points of each other
 
+**🤖 AI Candidate Analysis** *(requires local LLM)*: after the narrative, an expandable panel sends the ranked candidates and the existing rule-based narrative to the AI assistant, which produces an enriched interpretive commentary — explaining which evidence is strongest, contextualising surname patterns, and suggesting which additional record types (baptismal, testamentary, marriage dispensations) would confirm the identity.
+
 ---
 
 #### Completion Engine (batch mode)
@@ -670,6 +678,8 @@ For the selected case, shows:
 - A **natural-language narrative** (ES / EN) explaining the evidence: typical marriage age and expected birth range, per-candidate witness matches, temporal and geographic coherence, and a conclusion naming the most probable parent or flagging a tie
 - A candidate table with per-factor scores including F7 (with a breakdown of how many matches came from the orphan's baptism vs. the children's baptisms)
 - **Save to confirmed results** / **Remove saved** buttons: confirmed cases are written to `data/family_completion_results.json` and are automatically picked up by the **Export to GRAMPS** module as notes on the relevant marriage families. Re-running the analysis does not overwrite this file — the batch lives only in the session, and only your manually confirmed cases persist on disk
+
+**🤖 AI Explanation** *(requires local LLM)*: at the bottom of each detail view, an expandable panel generates a plain-language explanation of why the top candidate is or is not likely the parent — describing the witness evidence, temporal and geographic fit, and suggesting next steps to confirm the filiation. The LLM configuration is shown directly in the Family Completion sidebar.
 
 ---
 
@@ -796,10 +806,15 @@ All settings are in the sidebar:
 | Model name | `qwen3-14b` | Model identifier sent in the request |
 | Top-K | 5 | Number of chunks retrieved per question |
 | Max context tokens | 3000 | Total token budget for context + history |
+| Response timeout | 300 s | Maximum time to wait for an LLM response before showing an error |
 
 **Top-K** controls how many text fragments are retrieved and sent to the LLM. Higher values give the model more context for broad questions but slow down responses and may introduce irrelevant content for specific ones. 5–8 works well for person/family lookups; 10–15 is better for open-ended questions.
 
 **Max context tokens** is the total token budget for the message sent to the LLM (system prompt + statistics block + retrieved chunks + conversation history). Increase this if the model seems to forget earlier turns in a long conversation. Keep it well below your model's context window limit.
+
+**Response timeout** sets the maximum number of seconds the app will wait for the LLM to respond. The default of 300 s accommodates slow or quantized local models. Raise it for very long narrative generation tasks or lower it for fast inference servers. This setting is shared across the standalone AI Assistant and the embedded AI panels in other modules.
+
+> **Shared configuration**: the LLM settings (URL, model, Top-K, Max context tokens, Response timeout) are stored in session state and shared across all modules. Changing them in the AI Assistant sidebar immediately applies to the AI panels in Historical Context, Candidate Identification, and Family Completion. The relevant settings are also shown directly in the sidebar of each module that uses AI features.
 
 ---
 
@@ -817,6 +832,28 @@ The search index is saved to `data/rag_index/` and reused across sessions. It is
 - A locally running LLM server with an OpenAI-compatible API (tested with llama-swap + Qwen3-14B / Qwen3-8B GGUF models)
 - Python packages: `pypdf>=4.0`, `rank-bm25>=0.2.2` (installed automatically via `requirements.txt`)
 - No GPU required for the TF-IDF retrieval path; a GPU is only needed to run the LLM itself
+
+---
+
+## AI Integration across modules
+
+The local AI assistant is not limited to its own dedicated section. It is embedded as an **optional, non-intrusive complement** in three other modules. In each case the AI panel appears inside a collapsed expander — if the LLM server is not running, the rest of the page is completely unaffected.
+
+| Module | Where the AI panel appears | What it produces |
+|--------|---------------------------|-----------------|
+| **General → Historical Context** | Timeline tab, after selecting an individual or family | Contextualised historical narrative weaving personal events with uploaded municipal history documents |
+| **Family Completion → Candidate Identification** | After the scoring results and rule-based narrative | Enriched interpretive commentary on the ranked candidates, evidence strengths, and suggested record types to search next |
+| **Family Completion → Completion Engine** | Detail tab, at the bottom of each case | Plain-language explanation of the top candidate's probable filiation and recommended next steps |
+
+### How the shared index works
+
+All three embedded panels use the same RAG index as the standalone AI Assistant. The index is keyed by the MD5 hash of the loaded `.gramps` file and the sorted list of uploaded document filenames — it is rebuilt only when the source data changes, and reused transparently otherwise.
+
+For the Historical Context panel, you can additionally upload PDF or TXT documents specific to that municipality (e.g. local history books). These are merged with any documents already loaded in the AI Assistant before building the index. Uploading a new historical document triggers a one-time index rebuild; subsequent selections of individuals or families reuse the cached index.
+
+### LLM configuration
+
+All AI settings are shared via session state. You can configure them either in the **AI Assistant sidebar** or directly in the sidebar of whichever module you are currently using — the values are always the same and changes propagate instantly.
 
 ---
 

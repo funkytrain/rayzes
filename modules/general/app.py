@@ -1690,6 +1690,75 @@ def _render_timeline_rows(rows: list):
             st.markdown(f"**{year_str}** {icon} {desc}{place_str}{age_str}")
 
 
+_CTX_HIST_SYSTEM_PROMPT = (
+    "Eres un historiador y genealogista experto. Se te proporcionan fragmentos de documentos "
+    "históricos sobre municipios y un resumen de eventos personales de un individuo o familia. "
+    "Redacta un relato histórico coherente que contextualice su vida dentro del marco histórico "
+    "local. Cita fechas, lugares y hechos específicos de los documentos. "
+    "No inventes datos. Si los documentos no contienen información relevante, indícalo."
+)
+
+
+def _build_ctx_hist_question(
+    name_or_label: str,
+    personal_events: list,
+    linked_places: list,
+) -> str:
+    parts = [f"Persona/familia: {name_or_label}."]
+    if linked_places:
+        parts.append(f"Lugares vinculados: {', '.join(linked_places[:6])}.")
+    ev_lines = []
+    for ev in personal_events[:12]:
+        year = ev.get("year") or "?"
+        desc = ev.get("description") or ev.get("type") or ""
+        place = ev.get("place") or ""
+        ev_lines.append(f"{year} — {desc}{(' (' + place + ')') if place else ''}")
+    if ev_lines:
+        parts.append("Eventos vitales: " + "; ".join(ev_lines) + ".")
+    parts.append(
+        "Redacta un relato histórico contextualizado de la vida de esta persona o familia, "
+        "integrando los eventos históricos de los documentos disponibles sobre esos lugares y época."
+    )
+    return "\n".join(parts)
+
+
+def _render_ai_ctx_historico(
+    name_or_label: str,
+    personal_events: list,
+    linked_places: list,
+    content_bytes: bytes,
+    selection_id: str,
+) -> None:
+    import hashlib
+    with st.expander(t("ai_ctx_expander_label"), expanded=False):
+        pdf_uploads = st.file_uploader(
+            t("ai_ctx_pdf_upload_label"),
+            type=["pdf", "txt"],
+            accept_multiple_files=True,
+            key="ctx_hist_pdf_uploads",
+        )
+        st.caption(t("ai_ctx_index_note"))
+        # Merge with any docs already in the RAG assistant session
+        rag_docs = st.session_state.get("rag_doc_uploads") or []
+        all_uploads = list(pdf_uploads or []) + [d for d in rag_docs if d.name not in {f.name for f in (pdf_uploads or [])}]
+        pdf_names_hash = hashlib.md5("_".join(sorted(f.name for f in all_uploads)).encode()).hexdigest()[:8]
+        cache_key = f"ctx_hist_ai_answer_{selection_id}_{pdf_names_hash}"
+
+        if st.button(t("ai_ctx_generate_btn"), key=f"ctx_hist_ai_btn_{selection_id}"):
+            question = _build_ctx_hist_question(name_or_label, personal_events, linked_places)
+            with st.spinner(t("ai_ctx_thinking")):
+                from modules.rag_assistant.app import answer_oneshot
+                answer, error = answer_oneshot(question, content_bytes, all_uploads or None, _CTX_HIST_SYSTEM_PROMPT)
+            if answer:
+                st.session_state[cache_key] = answer
+            else:
+                st.warning(error or t("ai_ctx_no_index"))
+
+        cached = st.session_state.get(cache_key)
+        if cached:
+            st.markdown(cached)
+
+
 def page_contexto_historico(content_bytes: bytes):
     st.title(t("gen_ctx_title"))
     st.caption(t("gen_ctx_caption"))
@@ -1847,6 +1916,8 @@ def page_contexto_historico(content_bytes: bytes):
                         mime="text/csv",
                     )
 
+                _render_ai_ctx_historico(name, personal_events, linked_places, content_bytes, selected_pid)
+
         else:  # Familia
             def _family_label(fid):
                 fam = families_ext.get(fid, {})
@@ -1913,6 +1984,8 @@ def page_contexto_historico(content_bytes: bytes):
                         file_name=f"contexto_{label.replace(' ', '_')}.csv",
                         mime="text/csv",
                     )
+
+                _render_ai_ctx_historico(label, personal_events, linked_places, content_bytes, selected_fid)
 
 
 # ============================================================
@@ -2560,6 +2633,83 @@ def _read_candidate_data(cid):
     }
 
 
+_CAND_AI_SYSTEM_PROMPT = (
+    "Eres un genealogista experto en España pre-industrial. "
+    "Se te proporciona un análisis probabilístico de candidatos a padre/madre de un individuo. "
+    "Explica cuál es el más probable, qué evidencias son más sólidas, qué significan los "
+    "patrones de apellidos y testigos, y qué registros adicionales (bautismales, matrimoniales, "
+    "testamentarios) podrían confirmar la identidad. Sé concreto y cita los datos aportados. "
+    "No inventes información que no aparezca en el contexto."
+)
+
+
+def _build_cand_ai_question(target_info: dict, results: list, narrative: str) -> str:
+    parts = []
+    year = target_info.get("year") or "?"
+    place = target_info.get("place") or "?"
+    witnesses = target_info.get("witnesses") or []
+    parts.append(f"Matrimonio objetivo: año {year}, lugar {place}.")
+    if witnesses:
+        parts.append(f"Testigos: {', '.join(witnesses[:8])}.")
+    parts.append("Candidatos ordenados por probabilidad:")
+    for i, res in enumerate(results[:3], 1):
+        prob = res.get("prob", 0)
+        f1 = res.get("f1_score")
+        f4 = res.get("f4_score")
+        f5 = res.get("f5_score")
+        detail = []
+        if f1 is not None:
+            detail.append(f"testigos={f1:.0%}")
+        if f4 is not None:
+            detail.append(f"temporal={f4:.0%}")
+        if f5 is not None:
+            detail.append(f"geog={f5:.0%}")
+        n_matches = len(res.get("f1_matches") or [])
+        if n_matches:
+            detail.append(f"coincidencias={n_matches}")
+        parts.append(f"{i}. {res['name']} ({prob:.0%}): {', '.join(detail) or 'sin detalles'}")
+    if narrative:
+        parts.append(f"Narrativa del sistema: {narrative[:400]}")
+    parts.append(
+        "Analiza los candidatos: ¿cuál es el más probable? Explica qué evidencias "
+        "son más sólidas, qué significan los patrones de apellidos y testigos, y qué "
+        "registros adicionales podrían confirmar la identidad."
+    )
+    return "\n".join(parts)
+
+
+def _render_ai_candidatos(
+    target_info: dict,
+    results: list,
+    narrative: str,
+    content_bytes: bytes,
+) -> None:
+    with st.expander(t("ai_cand_expander_label"), expanded=False):
+        st.caption(t("ai_cand_expander_caption"))
+        results_hash = hash(str([(r.get("name"), r.get("prob")) for r in results]))
+        if st.button(t("ai_cand_generate_btn"), key="cand_ai_generate_btn"):
+            st.session_state["cand_ai_pending"] = True
+            st.session_state["cand_ai_pending_hash"] = results_hash
+        if st.session_state.get("cand_ai_pending") and st.session_state.get("cand_ai_pending_hash") == results_hash:
+            question = _build_cand_ai_question(target_info, results, narrative)
+            with st.spinner(t("ai_cand_thinking")):
+                from modules.rag_assistant.app import answer_oneshot
+                answer, error = answer_oneshot(question, content_bytes, None, _CAND_AI_SYSTEM_PROMPT)
+            if answer:
+                st.session_state["cand_ai_answer"] = answer
+                st.session_state["cand_ai_answer_hash"] = results_hash
+            else:
+                st.warning(error or t("ai_cand_no_index"))
+            st.session_state["cand_ai_pending"] = False
+        cached = st.session_state.get("cand_ai_answer")
+        cached_hash = st.session_state.get("cand_ai_answer_hash")
+        if cached:
+            if cached_hash == results_hash:
+                st.markdown(cached)
+            else:
+                st.info(t("ai_cand_stale_hint"))
+
+
 # ============================================================
 # Sub-página: Identificación de candidatos
 # ============================================================
@@ -2861,6 +3011,8 @@ def page_identificacion_candidatos(content_bytes):
     narrative = _generate_narrative(results, target_info, typ_age, len(results))
     st.markdown(narrative)
 
+    _render_ai_candidatos(target_info, results, narrative, content_bytes)
+
 
 # ============================================================
 # Interfaz pública
@@ -2894,6 +3046,12 @@ def render_sidebar():
          t("gen_subpage_contexto")],
         key='gen_active_subpage_label',
     )
+
+    active = st.session_state.get('gen_active_subpage_label', '')
+    if active == t("gen_subpage_contexto"):
+        st.sidebar.markdown("---")
+        from modules.rag_assistant.app import render_llm_config_sidebar
+        render_llm_config_sidebar()
 
 
 def render_page():

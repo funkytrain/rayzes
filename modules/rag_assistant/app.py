@@ -61,7 +61,7 @@ def _ensure_index(content_bytes: bytes, doc_uploads) -> None:
                 return
 
     # Rebuild
-    base_url = st.session_state.get("rag_llm_base_url", "http://localhost:8080/v1")
+    base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
     model = st.session_state.get("rag_llm_model", "qwen3-14b")
 
     with st.spinner(t("rag_index_building")):
@@ -171,8 +171,9 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
 
     top_k = st.session_state.get("rag_top_k", 5)
     max_tokens = st.session_state.get("rag_max_ctx_tokens", 3000)
-    base_url = st.session_state.get("rag_llm_base_url", "http://localhost:8080/v1")
+    base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
     model = st.session_state.get("rag_llm_model", "qwen3-14b")
+    llm_timeout = st.session_state.get("rag_llm_timeout", 300)
     max_answer = min(max_tokens // 2, 2000)
 
     retrieved = retrieve(question, index, top_k=top_k, base_url=base_url, model=model)
@@ -198,7 +199,7 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
     try:
         for round_n in range(_MAX_TOOL_ROUNDS + 1):
             try:
-                response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer)
+                response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer, timeout=llm_timeout)
             except RuntimeError as e:
                 err = str(e)
                 is_overflow = ("exceed_context_size" in err or "context_length_exceeded" in err
@@ -211,7 +212,7 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
                         max_context_tokens=safe_context // 2,
                         tree_stats=index.tree_stats,
                     )
-                    response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer)
+                    response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer, timeout=llm_timeout)
                 else:
                     raise
 
@@ -240,9 +241,66 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
     return "", retrieved
 
 
+def answer_oneshot(
+    question: str,
+    content_bytes: bytes,
+    doc_uploads=None,
+    system_prompt: str | None = None,
+) -> tuple[str | None, str | None]:
+    """
+    One-shot AI answer for embedding in other pages.
+    Returns (answer_text, error_message). Exactly one of the two is None.
+    """
+    try:
+        _ensure_index(content_bytes, doc_uploads or [])
+    except Exception as exc:
+        return None, str(exc)
+
+    index = st.session_state.get("rag_index_obj")
+    if index is None:
+        return None, t("ai_ctx_no_index")
+
+    prev_prompt = st.session_state.get("rag_system_prompt")
+    if system_prompt is not None:
+        st.session_state["rag_system_prompt"] = system_prompt
+    try:
+        answer, _ = _answer_question(question, index, [])
+        return answer, None
+    except RuntimeError as exc:
+        return None, str(exc)
+    finally:
+        if system_prompt is not None:
+            if prev_prompt is None:
+                st.session_state.pop("rag_system_prompt", None)
+            else:
+                st.session_state["rag_system_prompt"] = prev_prompt
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Streamlit render functions
 # ─────────────────────────────────────────────────────────────────────────────
+
+def render_llm_config_sidebar() -> None:
+    """Bloque reutilizable de configuración del LLM. Se puede llamar desde cualquier sidebar."""
+    st.sidebar.markdown(t("rag_sidebar_header"))
+    st.sidebar.text_input(
+        t("rag_sidebar_llm_url"),
+        value=st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1"),
+        key="rag_llm_base_url",
+    )
+    st.sidebar.text_input(
+        t("rag_sidebar_model"),
+        value=st.session_state.get("rag_llm_model", "qwen3-14b"),
+        key="rag_llm_model",
+    )
+    st.sidebar.slider(t("rag_sidebar_topk"), 1, 20, 5, key="rag_top_k")
+    st.sidebar.slider(
+        t("rag_sidebar_max_tokens"), 512, 8192, 3000, step=256, key="rag_max_ctx_tokens"
+    )
+    st.sidebar.slider(
+        t("rag_sidebar_timeout"), 60, 600, 300, step=30, key="rag_llm_timeout"
+    )
+
 
 def render_sidebar() -> None:
     st.sidebar.markdown(t("rag_sidebar_header"))
@@ -279,6 +337,9 @@ def render_sidebar() -> None:
     st.sidebar.slider(t("rag_sidebar_topk"), 1, 20, 5, key="rag_top_k")
     st.sidebar.slider(
         t("rag_sidebar_max_tokens"), 512, 8192, 3000, step=256, key="rag_max_ctx_tokens"
+    )
+    st.sidebar.slider(
+        t("rag_sidebar_timeout"), 60, 600, 300, step=30, key="rag_llm_timeout"
     )
 
     st.sidebar.markdown("---")

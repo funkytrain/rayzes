@@ -565,8 +565,72 @@ def _build_place_coords(db: GrampsDB) -> dict:
     return coords
 
 
+_FCE_AI_SYSTEM_PROMPT = (
+    "Eres un genealogista experto. Se te proporciona un caso de identificación de padre o madre "
+    "mediante análisis probabilístico de testigos, cronología y geografía. "
+    "Explica en lenguaje natural y sin tecnicismos por qué el candidato principal es o no es "
+    "probable, qué evidencia lo apoya o debilita, y qué pasos seguirían para confirmarlo. "
+    "Sé directo y concreto."
+)
+
+
+def _build_fce_ai_question(case: dict, top_results: list) -> str:
+    parts = []
+    parts.append(
+        f"Persona huérfana: {case.get('orphan_name')} (ID {case.get('orphan_pid')}), "
+        f"rol buscado: {case.get('role_needed')}, "
+        f"matrimonio: año {case.get('marriage_year') or '?'}, "
+        f"lugar {case.get('marriage_place') or '?'}."
+    )
+    tw = case.get("target_witnesses") or []
+    if tw:
+        parts.append(f"Testigos del matrimonio: {', '.join(tw[:8])}.")
+    parts.append("Candidatos principales:")
+    for i, res in enumerate(top_results[:3], 1):
+        prob = res.get("prob", 0)
+        n_matches = len(res.get("f1_matches") or [])
+        f4 = res.get("f4_score")
+        f5 = res.get("f5_score")
+        detail = [f"prob={prob:.0%}", f"coincidencias_testigos={n_matches}"]
+        if f4 is not None:
+            detail.append(f"temporal={f4:.0%}")
+        if f5 is not None:
+            detail.append(f"geog={f5:.0%}")
+        parts.append(f"{i}. {res.get('name', '?')} ({', '.join(detail)})")
+    parts.append(
+        "Explica en lenguaje natural por qué el candidato principal es probable (o no), "
+        "qué evidencia lo apoya o debilita, y qué registros adicionales confirmarían la filiación."
+    )
+    return "\n".join(parts)
+
+
+def _render_ai_fce_explanation(case: dict, content_bytes) -> None:
+    if not content_bytes:
+        return
+    orphan_pid = case.get("orphan_pid", "")
+    marriage_fid = case.get("marriage_fid", "")
+    cache_key = f"fce_ai_answer_{orphan_pid}_{marriage_fid}"
+    btn_key = f"fce_ai_btn_{orphan_pid}_{marriage_fid}"
+    with st.expander(t("ai_fce_expander_label"), expanded=False):
+        st.caption(t("ai_fce_expander_caption"))
+        if st.button(t("ai_fce_generate_btn"), key=btn_key):
+            top_results = (case.get("results") or [])[:3]
+            question = _build_fce_ai_question(case, top_results)
+            with st.spinner(t("ai_fce_thinking")):
+                from modules.rag_assistant.app import answer_oneshot
+                answer, error = answer_oneshot(question, content_bytes, None, _FCE_AI_SYSTEM_PROMPT)
+            if answer:
+                st.session_state[cache_key] = answer
+            else:
+                st.warning(error or t("ai_fce_no_index"))
+        cached = st.session_state.get(cache_key)
+        if cached:
+            st.markdown(cached)
+
+
 def _render_result_detail(case: dict, db: GrampsDB, people_ext: dict,
-                           families_ext: dict, place_coords: dict, config: dict):
+                           families_ext: dict, place_coords: dict, config: dict,
+                           content_bytes=None):
     """Vista de detalle para un caso seleccionado (Tab 3)."""
     st.markdown(f"**{t('fce_orphan')}:** {case.get('orphan_name')} — "
                 f"{t('fce_role_needed')}: {case.get('role_needed')} — "
@@ -652,6 +716,8 @@ def _render_result_detail(case: dict, db: GrampsDB, people_ext: dict,
                 save_confirmed_results(confirmed_now)
                 st.success(t("fce_deleted_ok"))
 
+    _render_ai_fce_explanation(case, content_bytes)
+
 
 # ============================================================
 # Sidebar
@@ -698,6 +764,10 @@ def render_sidebar():
             format_func=lambda x: {"": t("fce_role_all"), "father": t("fce_role_father"), "mother": t("fce_role_mother")}.get(x, x),
             key="fce_role_filter",
         )
+
+    st.sidebar.markdown("---")
+    from modules.rag_assistant.app import render_llm_config_sidebar
+    render_llm_config_sidebar()
 
 
 # ============================================================
@@ -861,4 +931,5 @@ def render_page():
         if case is None:
             st.info(t("fce_select_case_hint"))
         else:
-            _render_result_detail(case, db, people_ext, families_ext, place_coords, config)
+            _render_result_detail(case, db, people_ext, families_ext, place_coords, config,
+                                   content_bytes=content_bytes)

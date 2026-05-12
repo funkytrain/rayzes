@@ -958,21 +958,35 @@ def calculate_network_metrics_over_time(df_in, period='decade'):
 def render_sidebar():
     """Controles de sidebar de Testigos: uploader GRAMPS + radio de sub-páginas."""
     st.sidebar.markdown(t("sidebar_gramps_header"))
-    uploaded_file = st.sidebar.file_uploader(t("sidebar_gramps_uploader"), type=['gramps', 'xml'])
 
-    if uploaded_file is not None:
-        file_bytes = uploaded_file.getbuffer().tobytes()
-        temp_path = BASE_DIR / f"temp_{uploaded_file.name}"
+    shared_bytes = st.session_state.get('shared_gramps_bytes')
+    shared_name = st.session_state.get('shared_gramps_name', '')
+
+    if shared_bytes and 'tst_gramps_xml_path' not in st.session_state:
+        temp_path = BASE_DIR / f"temp_{shared_name}"
         with open(temp_path, 'wb') as f:
-            f.write(file_bytes)
+            f.write(shared_bytes)
         st.session_state['tst_gramps_xml_path'] = str(temp_path)
-        # Compartir con otros módulos (ej. Consanguinidad)
-        st.session_state['shared_gramps_bytes'] = file_bytes
-        st.session_state['shared_gramps_name'] = uploaded_file.name
-        st.sidebar.success(t("sidebar_gramps_loaded", name=uploaded_file.name))
+
+    if shared_bytes:
+        st.sidebar.success(t("sidebar_gramps_loaded", name=shared_name))
         if st.sidebar.button(t("sidebar_gramps_reload")):
             st.cache_data.clear()
             st.rerun()
+    else:
+        uploaded_file = st.sidebar.file_uploader(t("sidebar_gramps_uploader"), type=['gramps', 'xml'])
+        if uploaded_file is not None:
+            file_bytes = uploaded_file.getbuffer().tobytes()
+            temp_path = BASE_DIR / f"temp_{uploaded_file.name}"
+            with open(temp_path, 'wb') as f:
+                f.write(file_bytes)
+            st.session_state['tst_gramps_xml_path'] = str(temp_path)
+            st.session_state['shared_gramps_bytes'] = file_bytes
+            st.session_state['shared_gramps_name'] = uploaded_file.name
+            st.sidebar.success(t("sidebar_gramps_loaded", name=uploaded_file.name))
+            if st.sidebar.button(t("sidebar_gramps_reload")):
+                st.cache_data.clear()
+                st.rerun()
 
     st.sidebar.markdown("---")
     st.sidebar.markdown(t("sidebar_sections"))
