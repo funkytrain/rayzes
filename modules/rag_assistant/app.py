@@ -247,10 +247,7 @@ def answer_oneshot(
     doc_uploads=None,
     system_prompt: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """
-    One-shot AI answer for embedding in other pages.
-    Returns (answer_text, error_message). Exactly one of the two is None.
-    """
+    """Returns (answer_text, error_message). Exactly one of the two is None."""
     try:
         _ensure_index(content_bytes, doc_uploads or [])
     except Exception as exc:
@@ -281,7 +278,6 @@ def answer_oneshot(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_llm_config_sidebar() -> None:
-    """Bloque reutilizable de configuración del LLM. Se puede llamar desde cualquier sidebar."""
     st.sidebar.markdown(t("rag_sidebar_header"))
     st.sidebar.text_input(
         t("rag_sidebar_llm_url"),
@@ -303,9 +299,6 @@ def render_llm_config_sidebar() -> None:
 
 
 def render_sidebar() -> None:
-    st.sidebar.markdown(t("rag_sidebar_header"))
-
-    # GRAMPS file indicator
     shared_bytes = st.session_state.get("shared_gramps_bytes")
     shared_name = st.session_state.get("shared_gramps_name", "")
     if shared_bytes:
@@ -322,29 +315,10 @@ def render_sidebar() -> None:
             st.session_state["shared_gramps_name"] = uploaded.name
 
     st.sidebar.markdown("---")
-
-    # LLM config
-    st.sidebar.text_input(
-        t("rag_sidebar_llm_url"),
-        value=st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1"),
-        key="rag_llm_base_url",
-    )
-    st.sidebar.text_input(
-        t("rag_sidebar_model"),
-        value=st.session_state.get("rag_llm_model", "qwen3-14b"),
-        key="rag_llm_model",
-    )
-    st.sidebar.slider(t("rag_sidebar_topk"), 1, 20, 5, key="rag_top_k")
-    st.sidebar.slider(
-        t("rag_sidebar_max_tokens"), 512, 8192, 3000, step=256, key="rag_max_ctx_tokens"
-    )
-    st.sidebar.slider(
-        t("rag_sidebar_timeout"), 60, 600, 300, step=30, key="rag_llm_timeout"
-    )
+    render_llm_config_sidebar()
 
     st.sidebar.markdown("---")
 
-    # Additional documents
     st.sidebar.file_uploader(
         t("rag_sidebar_upload_docs"),
         type=["pdf", "txt"],
@@ -352,11 +326,9 @@ def render_sidebar() -> None:
         key="rag_doc_uploads",
     )
 
-    # Rebuild button
     if st.sidebar.button(t("rag_sidebar_rebuild_btn"), key="rag_rebuild_btn"):
         st.session_state["rag_force_rebuild"] = True
 
-    # Index status
     meta = st.session_state.get("rag_index_meta")
     if meta:
         strategy_label = (

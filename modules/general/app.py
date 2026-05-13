@@ -11,6 +11,7 @@ import json
 import re
 import statistics
 import math
+import hashlib
 from collections import defaultdict
 from pathlib import Path
 from io import StringIO
@@ -1729,7 +1730,6 @@ def _render_ai_ctx_historico(
     content_bytes: bytes,
     selection_id: str,
 ) -> None:
-    import hashlib
     with st.expander(t("ai_ctx_expander_label"), expanded=False):
         pdf_uploads = st.file_uploader(
             t("ai_ctx_pdf_upload_label"),
@@ -1738,7 +1738,6 @@ def _render_ai_ctx_historico(
             key="ctx_hist_pdf_uploads",
         )
         st.caption(t("ai_ctx_index_note"))
-        # Merge with any docs already in the RAG assistant session
         rag_docs = st.session_state.get("rag_doc_uploads") or []
         all_uploads = list(pdf_uploads or []) + [d for d in rag_docs if d.name not in {f.name for f in (pdf_uploads or [])}]
         pdf_names_hash = hashlib.md5("_".join(sorted(f.name for f in all_uploads)).encode()).hexdigest()[:8]
