@@ -8,12 +8,46 @@ su reutilización y pruebas unitarias.
 import re
 import math
 from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 
 import pandas as pd
 
 from modules.shared.utils import normalize_name, haversine_km, year_from_date_str
 
 normalize = normalize_name  # alias para compatibilidad con lógica original
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constantes demográficas históricas para España rural (siglos XVII-XX)
+# Fuente: Pérez Moreda (1980); INE series históricas
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LIFE_EXPECTANCY_SPAIN = {
+    (1700, 1800): 32,
+    (1800, 1850): 37,
+    (1850, 1900): 42,
+    (1900, 1950): 50,
+}
+
+_MOBILITY_PARAMS = {
+    'pre_1860': {
+        'typical_radius_km': 25,
+        'hard_limit_km': 100,
+        'scale': 20.0,
+    },
+    'post_1860': {
+        'typical_radius_km': 60,
+        'hard_limit_km': 300,
+        'scale': 50.0,
+    },
+}
+
+_SOCIAL_TITLES = {
+    'alto': {'don', 'doña', 'dona', 'señor', 'señora', 'noble', 'hidalgo',
+              'licenciado', 'licenciada', 'doctor', 'dr', 'dra', 'fray',
+              'sor', 'maestro', 'regidor', 'alcalde', 'escribano', 'notario'},
+    'medio': {'oficial', 'artesano', 'mercader', 'comerciante', 'boticario'},
+    'bajo': {'jornalero', 'labrador', 'pastor', 'criado', 'mozo'},
+}
 
 try:
     import networkx as nx

@@ -15,8 +15,8 @@ _lang_display = st.sidebar.selectbox(
 set_lang("es" if _lang_display == "Español" else "en")
 st.sidebar.markdown("---")
 
-SECTION_KEYS = ["general", "testigos", "consanguinidad", "adn", "migration", "family_completion", "export", "rag_assistant"]
-SECTION_LABELS = [t("section_general"), t("section_testigos"), t("section_consanguinidad"), t("section_adn"), t("section_migration"), t("section_family_completion"), t("section_export"), t("section_rag_assistant")]
+SECTION_KEYS = ["general", "testigos", "consanguinidad", "adn", "migration", "family_completion", "export", "rag_assistant", "investigacion"]
+SECTION_LABELS = [t("section_general"), t("section_testigos"), t("section_consanguinidad"), t("section_adn"), t("section_migration"), t("section_family_completion"), t("section_export"), t("section_rag_assistant"), t("section_investigacion")]
 
 if "active_section_key" not in st.session_state:
     st.session_state["active_section_key"] = SECTION_KEYS[0]
@@ -55,6 +55,8 @@ elif active_section == "export":
     from modules.export import render_sidebar, render_page
 elif active_section == "rag_assistant":
     from modules.rag_assistant import render_sidebar, render_page
+elif active_section == "investigacion":
+    from modules.investigacion import render_sidebar, render_page
 
 render_sidebar()
 render_page()

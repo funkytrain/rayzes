@@ -79,7 +79,8 @@ NOTES_CSV    = DATA_DIR / "notes_report_bom.csv"
 SUPER_CSV    = DATA_DIR / "superpadrinos_final_bom.csv"
 GRAMPS_PATH  = DATA_DIR / "data.gramps"
 CONFIRMED_PATH               = DATA_DIR / "confirmed_links.json"
-NOTE_CATEGORY_OVERRIDES_PATH = DATA_DIR / "note_category_overrides.json"
+NOTE_CATEGORY_OVERRIDES_PATH   = DATA_DIR / "note_category_overrides.json"
+IDENTITY_RESOLUTION_FILE       = DATA_DIR / "identity_resolution_results.json"
 
 # Almacén tipado para confirmed_links.json — punto único de acceso
 _store = ConfirmedLinksStore(CONFIRMED_PATH)
@@ -995,6 +996,7 @@ def render_sidebar():
         t("menu_notas"), t("menu_analisis"), t("menu_timeline"), t("menu_confirmar"),
         t("menu_bayesiana"), t("menu_pendientes"), t("menu_trayectoria"), t("menu_informe"),
         t("menu_testigos_arbol"), t("menu_posibles_familiares"),
+        t("menu_identity_resolution"),
     ]
     _override = st.session_state.get('tst_menu_override')
     if _override and _override in _menu_options:
@@ -1149,6 +1151,8 @@ def render_page():
         page_testigos_arbol()
     elif menu == t("menu_posibles_familiares"):
         page_posibles_familiares()
+    elif menu == t("menu_identity_resolution"):
+        page_identity_resolution()
 
     try:
         save_confirmations(load_confirmations())
@@ -7171,5 +7175,230 @@ def _save_possible_relatives(relatives):
     conf_data = load_confirmations()
     conf_data["possible_relatives"] = possible_relatives_to_dict(relatives)
     save_confirmations(conf_data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Página: Resolución árbol–testigos
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_identity_resolution():
+    """
+    Motor de identidad: cruza todos los testigos con todas las personas del árbol GRAMPS
+    usando el modelo bayesiano existente para generar una cola de trabajo priorizada.
+    """
+    from modules.testigos.identity_resolution import (
+        build_candidate_pairs, score_candidate_pairs, prioritize_pairs,
+        load_resolution_results, save_resolution_results, CandidatePair,
+    )
+    import dataclasses
+    from datetime import datetime as _dt
+
+    st.title(t("ir_title"))
+    st.caption(t("ir_description"))
+
+    # ── Verificar archivo GRAMPS ──────────────────────────────────────────────
+    content_bytes = st.session_state.get("shared_gramps_bytes")
+    if not content_bytes:
+        st.info(t("ir_no_file"))
+        return
+
+    # ── Configuración en sidebar ──────────────────────────────────────────────
+    st.sidebar.markdown("---")
+    name_threshold = st.sidebar.slider("Similitud mínima de nombre (%)", 50, 95, 65, step=5, key="ir_name_threshold") / 100.0
+    time_window    = st.sidebar.slider(t("ir_time_window_label"), 10, 100, 50, step=5, key="ir_time_window")
+    geo_km         = st.sidebar.slider(t("ir_geo_km_label"), 10, 500, 150, step=10, key="ir_geo_km")
+
+    # ── Panel de control ──────────────────────────────────────────────────────
+    col_run, col_save = st.columns([2, 1])
+    with col_run:
+        run_clicked = st.button(t("ir_run_btn"), type="primary")
+    with col_save:
+        save_clicked = st.button(t("ir_save_btn"))
+
+    # ── Ejecutar análisis ─────────────────────────────────────────────────────
+    if run_clicked:
+        with st.spinner(t("ir_running")):
+            try:
+                db = _parse_gramps_shared(content_bytes)
+            except Exception as e:
+                st.error(f"Error al parsear GRAMPS: {e}")
+                return
+
+            _store.load()
+            conf_data = _store.get_all()
+            confirmed = set(conf_data.get('gramps_links', {}).get('confirmed', {}).keys())
+            discarded = set(conf_data.get('gramps_links', {}).get('discarded', []))
+
+            pairs_raw, truncated = build_candidate_pairs(
+                by_witness        = by_witness,
+                gramps_db         = db,
+                already_confirmed = confirmed,
+                already_discarded = discarded,
+                time_window       = time_window,
+                geo_km            = geo_km,
+                name_threshold    = name_threshold,
+            )
+
+            if truncated:
+                st.warning(t("ir_truncated_warning").format(n=5_000))
+
+            scored      = score_candidate_pairs(pairs_raw, by_witness, db, places_index)
+            prioritized = prioritize_pairs(scored)
+
+            st.session_state['ir_pairs']       = [dataclasses.asdict(p) for p in prioritized]
+            st.session_state['ir_current_idx'] = None
+            st.session_state['ir_run_ts']      = _dt.now().strftime('%Y-%m-%d %H:%M')
+
+    # ── Guardar resultados ────────────────────────────────────────────────────
+    if save_clicked:
+        raw_pairs = st.session_state.get('ir_pairs', [])
+        if raw_pairs:
+            fields = set(CandidatePair.__dataclass_fields__.keys())
+            objs = [CandidatePair(**{k: v for k, v in p.items() if k in fields})
+                    for p in raw_pairs]
+            ok = save_resolution_results(objs, IDENTITY_RESOLUTION_FILE)
+            st.success(t("ir_saved_ok")) if ok else st.error(t("ir_saved_error"))
+        else:
+            st.info(t("ir_no_data"))
+
+    # ── Mostrar resultados ────────────────────────────────────────────────────
+    pairs_data = st.session_state.get('ir_pairs', [])
+    run_ts     = st.session_state.get('ir_run_ts')
+
+    if not pairs_data:
+        saved = load_resolution_results(IDENTITY_RESOLUTION_FILE)
+        if saved:
+            pairs_data = saved
+            st.session_state['ir_pairs'] = saved
+        else:
+            st.info(t("ir_no_data"))
+            return
+
+    # Métricas
+    n_auto   = sum(1 for p in pairs_data if p.get('recommendation') == 'auto_merge')
+    n_review = sum(1 for p in pairs_data if p.get('recommendation') == 'review')
+    n_diff   = sum(1 for p in pairs_data if p.get('recommendation') == 'different')
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(t("ir_metric_auto"),      n_auto)
+    c2.metric(t("ir_metric_review"),    n_review)
+    c3.metric(t("ir_metric_discarded"), n_diff)
+    if run_ts:
+        c4.markdown(f"*Último análisis: {run_ts}*")
+
+    # Filtro
+    filter_opt = st.radio(
+        "",
+        [t("ir_filter_all"), t("ir_filter_auto"), t("ir_filter_review")],
+        horizontal=True,
+        key="ir_filter",
+    )
+    if filter_opt == t("ir_filter_auto"):
+        filtered = [p for p in pairs_data if p.get('recommendation') == 'auto_merge']
+    elif filter_opt == t("ir_filter_review"):
+        filtered = [p for p in pairs_data if p.get('recommendation') == 'review']
+    else:
+        filtered = pairs_data
+
+    if not filtered:
+        st.info(t("ir_no_data"))
+        return
+
+    # Tabla de pares
+    import pandas as _pd
+    table_rows = []
+    for i, p in enumerate(filtered):
+        prob = p.get('probability', 0.0)
+        table_rows.append({
+            '_idx':              i,
+            t("ir_col_witness"): p.get('witness_name', ''),
+            t("ir_col_person"):  p.get('person_name', ''),
+            t("ir_col_prob"):    f"{prob:.0%}",
+            t("ir_col_rec"):     p.get('recommendation', ''),
+        })
+    df_table = _pd.DataFrame(table_rows)
+
+    selected_rows = st.dataframe(
+        df_table.drop(columns=['_idx']),
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="ir_table",
+    )
+
+    sel_indices = []
+    if hasattr(selected_rows, 'selection'):
+        sel_indices = selected_rows.selection.get('rows', [])
+    if sel_indices:
+        st.session_state['ir_current_idx'] = table_rows[sel_indices[0]]['_idx']
+
+    cur_idx = st.session_state.get('ir_current_idx')
+
+    if cur_idx is not None and 0 <= cur_idx < len(filtered):
+        pair = filtered[cur_idx]
+        st.markdown("---")
+        st.subheader(
+            f"{t('ir_detail_witness')}: **{pair.get('witness_name', '')}**  →  "
+            f"{t('ir_detail_person')}: **{pair.get('person_name', '')}**"
+        )
+
+        col_l, col_r = st.columns(2)
+        with col_l:
+            st.markdown(f"**{t('ir_detail_witness')}**")
+            st.write(f"Años: {pair.get('witness_year_min') or '?'} – {pair.get('witness_year_max') or '?'}")
+            places_w = pair.get('witness_places') or []
+            st.write(f"Lugares: {', '.join(places_w[:5]) if places_w else '—'}")
+        with col_r:
+            st.markdown(f"**{t('ir_detail_person')}**")
+            st.write(f"Nacimiento: {pair.get('person_birth_year') or '—'}  |  Muerte: {pair.get('person_death_year') or '—'}")
+            places_p = pair.get('person_places') or []
+            st.write(f"Lugares: {', '.join(places_p[:5]) if places_p else '—'}")
+            st.write(f"GRAMPS ID: {pair.get('gramps_id', '')}")
+
+        br = pair.get('bayesian_result') or {}
+        fc = br.get('feature_contributions') or {}
+        if fc:
+            try:
+                import plotly.graph_objects as _go
+                labels = list(fc.keys())
+                values = [float(fc[k]) for k in labels]
+                fig = _go.Figure(_go.Bar(x=labels, y=values, marker_color='steelblue'))
+                fig.update_layout(
+                    height=220,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    yaxis=dict(range=[0, 1]),
+                    title_text="Contribución por factor",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.write(fc)
+
+        explanation = br.get('explanation', '')
+        if explanation:
+            st.info(explanation)
+
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button(t("ir_confirm_btn"), key=f"ir_confirm_{cur_idx}", type="primary"):
+                _store.load()
+                _store.link_to_gramps(
+                    pair.get('witness_name', ''),
+                    pair.get('pid', ''),
+                    pair.get('person_name', ''),
+                )
+                _store.save()
+                st.session_state['ir_current_idx'] = None
+                st.rerun()
+        with b2:
+            if st.button(t("ir_discard_btn"), key=f"ir_discard_{cur_idx}"):
+                _store.load()
+                _store.discard_gramps_link(pair.get('witness_name', ''))
+                _store.save()
+                st.session_state['ir_current_idx'] = None
+                st.rerun()
+        with b3:
+            if st.button(t("ir_skip_btn"), key=f"ir_skip_{cur_idx}"):
+                next_idx = cur_idx + 1
+                st.session_state['ir_current_idx'] = next_idx if next_idx < len(filtered) else None
+                st.rerun()
 
 

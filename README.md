@@ -18,6 +18,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [Family Completion Engine](#family-completion-engine) *(includes manual Candidate Identification)*
   - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
   - [AI Genealogy Assistant (RAG)](#ai-genealogy-assistant-rag)
+  - [Investigación (Research Agenda)](#investigación-research-agenda)
 - [AI Integration across modules](#ai-integration-across-modules)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
@@ -158,7 +159,7 @@ The full timeline can be exported to CSV.
 
 ### Testigos (Witness & Godparent Analysis)
 
-This module analyzes the role of witnesses and godparents (padrinos/madrinas) across baptism and marriage records. It includes 14 pages.
+This module analyzes the role of witnesses and godparents (padrinos/madrinas) across baptism and marriage records. It includes 15 pages.
 
 If a `.gramps` file is already loaded in any other section, Testigos picks it up automatically — no re-upload is needed when switching sections.
 
@@ -326,6 +327,44 @@ Links witnesses from the event records back to named individuals in the GRAMPS f
 - Existing confirmations
 
 Shows matched individuals with their GRAMPS person ID and confidence score.
+
+---
+
+#### Resolución árbol–testigos — Tree–Witness Identity Resolution
+
+Systematically crosses **every canonical witness** in the dataset against **every person in the GRAMPS family tree**, applying the same Bayesian scoring model used in the manual Bayesian Identity page. The result is a prioritised work queue of candidate pairs — no manual name-by-name search required.
+
+**Candidate generation**
+
+A three-stage filter eliminates irrelevant pairs before any expensive computation:
+
+1. **Name pre-filter**: a token inverted index (token → list of GRAMPS persons) limits candidates to individuals who share at least one significant name token with the witness. A fuzzy similarity check (rapidfuzz `token_sort_ratio`, threshold configurable via sidebar, default 65 %) eliminates low-quality matches. This step alone reduces the candidate set from millions of pairs to a few thousand.
+2. **Temporal filter**: the person must have at least one known year (birth, baptism, or death) that falls within the witness's activity window ± a configurable time window (default ±50 years).
+3. **Geographic filter**: if both the witness and the person have location data, the Haversine distance must be within a configurable radius (default 150 km). Pairs where location data is missing for either side are never discarded (neutral).
+
+**Scoring**
+
+Each surviving candidate pair is scored with `bayesian_identity_probability()` — the same four-factor model (name similarity, temporal overlap, geographic proximity, family overlap) used elsewhere in the Testigos module.
+
+**Results**
+
+Pairs are sorted by recommendation tier then by probability:
+- 🟢 **Auto-merge** (≥ 95 %): strong evidence for the same person
+- 🟡 **Review** (70–95 %): likely the same person, user confirmation recommended
+- 🔴 **Different** (< 70 %): probably distinct individuals
+
+**Detail panel** (select any row):
+
+- Two-column comparison: witness data (name variants, activity years, places) vs. tree person data (GRAMPS ID, birth/death, places)
+- Bar chart of `feature_contributions` broken down by factor (name, temporal, geographic, social)
+- Explanation text from the Bayesian model
+- **Confirm** button → writes to `data/confirmed_links.json` via `ConfirmedLinksStore.link_to_gramps()`
+- **Discard** button → records the rejection so the pair is excluded from future runs
+- **Skip** button → advances to the next candidate without making a decision
+
+**Sidebar controls**: minimum name similarity (%), temporal window (years), geographic radius (km). Results can be saved to `data/identity_resolution_results.json` for use by the Research Agenda module.
+
+This module includes `modules/testigos/identity_resolution.py`, a pure-function library (no Streamlit) that can be called independently from any other module.
 
 ---
 
@@ -835,6 +874,90 @@ The search index is saved to `data/rag_index/` and reused across sessions. It is
 
 ---
 
+### Investigación (Research Agenda)
+
+A unified research task manager that aggregates actionable findings from **all modules** into a single prioritised work queue with persistent state between sessions.
+
+---
+
+#### How it works
+
+When you click **Regenerar tareas** ("Regenerate tasks"), the module pulls data from four sources simultaneously:
+
+| Source | Task types generated |
+|--------|---------------------|
+| **General** — Inconsistency Detector | `resolve_inconsistency` — one task per active (non-dismissed) inconsistency |
+| **General** — Tree Endpoints | `find_parents` — one task per leaf node where further research is feasible |
+| **Family Completion Engine** | `confirm_parent_candidate` — one task per unconfirmed orphan with a strong candidate (prob ≥ 35 %) |
+| **Testigos** — Pending clusters | `confirm_witness_identity` — one task per pending witness identity cluster above the priority threshold |
+| **Tree–Witness Identity Resolution** | `resolve_tree_link` — one task per pair with recommendation `review` |
+
+Tasks are merged with any previously saved state using a **`source_ref` key** — a stable string that uniquely identifies each finding. When tasks are regenerated, status, notes, and found-source from prior sessions are preserved for any task whose finding still exists. Tasks whose underlying finding has been resolved (confirmed, dismissed, or no longer present in the data) are automatically removed.
+
+---
+
+#### Priority levels
+
+| Level | Label | Example |
+|-------|-------|---------|
+| 1 | 🔴 Critical | Biological impossibility inconsistency (severity=error) |
+| 2 | 🟡 High | Feasible leaf node; strong parent candidate; witness identity pair prob ≥ 85 % |
+| 3 | 🟢 Medium | Low-feasibility leaf node; weaker candidate or cluster |
+
+---
+
+#### Task statuses
+
+Each task can be individually set to one of four statuses:
+
+- **Pending** — not yet started (default)
+- **In progress** — investigation under way
+- **Done** — finding resolved
+- **Discarded** — not relevant; excluded from future regenerations
+
+The status can always be reverted to **Pending** from the detail panel.
+
+---
+
+#### Interface
+
+**Summary metrics** (always visible at the top):
+- Total pending tasks
+- Critical-priority pending tasks
+- Tasks completed in the current session
+
+**Sidebar filters** (applied instantly without regenerating):
+- Status: All / Pending / In progress / Done / Discarded
+- Module: All / General / Family Completion / Testigos / Identity Resolution
+- Priority: All / 1–Critical / 2–High / 3–Medium
+- Free-text search by person name or task title
+
+**Task table**: sortable by priority, title, person, module, and status. Select any row to open the detail panel.
+
+**Detail panel** (shown below the table when a task is selected):
+- Priority badge and task title
+- Full detail text
+- GRAMPS person ID and name (when applicable)
+- **Notes** text area — free-form research notes
+- **Found source** field — record the archive, document, or source that resolved the task
+- Status buttons: **In progress** / **Done** / **Discard** / **Mark as pending** (each is disabled when the task is already in that state)
+- **Ask AI** button — sends the task detail to the RAG assistant for suggestions (requires an active local LLM)
+
+**Save state** button writes all task statuses, notes, and found-source entries to `data/research_tasks.json`. State is reloaded automatically on next visit.
+
+---
+
+#### Persistent data
+
+| File | Purpose |
+|---|---|
+| `data/research_tasks.json` | Task list with statuses, notes, and found-source entries; merged with regenerated tasks on next run |
+| `data/identity_resolution_results.json` | Output of the Tree–Witness Identity Resolution page; consumed as a task source |
+| `data/family_completion_results.json` | Confirmed/unconfirmed Family Completion candidates; consumed as a task source |
+| `data/dismissed_inconsistencies.json` | Dismissed inconsistencies; used to exclude already-handled findings from task generation |
+
+---
+
 ## AI Integration across modules
 
 The local AI assistant is not limited to its own dedicated section. It is embedded as an **optional, non-intrusive complement** in three other modules. In each case the AI panel appears inside a collapsed expander — if the LLM server is not running, the rest of the page is completely unaffected.
@@ -844,6 +967,7 @@ The local AI assistant is not limited to its own dedicated section. It is embedd
 | **General → Historical Context** | Timeline tab, after selecting an individual or family | Contextualised historical narrative weaving personal events with uploaded municipal history documents |
 | **Family Completion → Candidate Identification** | After the scoring results and rule-based narrative | Enriched interpretive commentary on the ranked candidates, evidence strengths, and suggested record types to search next |
 | **Family Completion → Completion Engine** | Detail tab, at the bottom of each case | Plain-language explanation of the top candidate's probable filiation and recommended next steps |
+| **Investigación → Task detail panel** | "Ask AI" button on any selected task | Suggestions on how to investigate the specific task: which records to search, where to find them, and what evidence would confirm or rule out the finding |
 
 ### How the shared index works
 
@@ -916,6 +1040,8 @@ The following files in `data/` are created and updated automatically as you use 
 | `dismissed_inconsistencies.json` | Inconsistencies manually dismissed as false positives; dismissed items are excluded from Export tags |
 | `historical/<place>.json` | Historical events uploaded per municipality for the Historical Context sub-page |
 | `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine; fed into Export candidate notes |
+| `identity_resolution_results.json` | Scored candidate pairs from the Tree–Witness Identity Resolution page; consumed by the Research Agenda |
+| `research_tasks.json` | Research Agenda task list with statuses, notes, and found-source entries; merged with regenerated tasks on next run |
 | `rag_index/` | Search index for the AI Assistant (chunks, TF-IDF matrix, optional embeddings, pre-computed statistics); rebuilt automatically when source data changes |
 
 These files persist between sessions. Back them up if you want to preserve your review work.
