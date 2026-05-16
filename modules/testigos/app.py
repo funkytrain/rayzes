@@ -5949,6 +5949,88 @@ def _get_gramps_index_rich(gramps_path_val):
     gi, _ = index_gramps(gramps_path_val)
     return gi
 
+
+def _is_plausible_gramps_match(events: list, candidate: dict,
+                                max_geo_km: float = 200.0,
+                                gramps_idx: dict = None) -> bool:
+    """
+    Rechaza un candidato GRAMPS si sus datos temporales o geográficos son
+    incompatibles con la actividad del testigo.
+
+    Devuelve False (incompatible) solo cuando hay datos que lo contradicen
+    claramente. Cuando la persona no tiene coordenadas propias, intenta
+    obtenerlas de sus hijos o nietos (proxy geográfico generacional).
+    Si tras ese proceso sigue sin haber coordenadas, devuelve False para
+    evitar falsos positivos con nombres comunes.
+    """
+    import re as _re_m
+
+    years = []
+    lats, lons = [], []
+    for e in events:
+        m = _re_m.match(r'(\d{4})', str(e.get('date_iso', '') or ''))
+        if m:
+            years.append(int(m.group(1)))
+        try:
+            lats.append(float(e.get('lat') or ''))
+            lons.append(float(e.get('lon') or ''))
+        except Exception:
+            pass
+
+    # ── Validación temporal ──────────────────────────────────────────────────
+    if years:
+        year_mean = int(sum(years) / len(years))
+        birth_y = candidate.get('birth_year')
+        death_y = candidate.get('death_year')
+        if birth_y is not None:
+            age = year_mean - birth_y
+            if age < 10 or age > 100:
+                return False
+        if death_y is not None and death_y < min(years):
+            return False
+
+    # ── Validación geográfica ────────────────────────────────────────────────
+    if lats and lons:
+        wit_lat = sum(lats) / len(lats)
+        wit_lon = sum(lons) / len(lons)
+
+        p_lat = candidate.get('birth_lat') or candidate.get('death_lat')
+        p_lon = candidate.get('birth_lon') or candidate.get('death_lon')
+
+        # Si el candidato no tiene coordenadas propias, buscar en descendientes
+        if (p_lat is None or p_lon is None) and gramps_idx is not None:
+            rel_lats, rel_lons = [], []
+            relatives = list(candidate.get('children', []))
+            # Añadir nietos: hijos de los hijos
+            for child_name in list(relatives):
+                child_key = normalize(child_name)
+                for child_entry in gramps_idx.get(child_key, []):
+                    for gc_name in child_entry.get('children', []):
+                        if gc_name not in relatives:
+                            relatives.append(gc_name)
+            for rel_name in relatives:
+                rel_key = normalize(rel_name)
+                for rel_entry in gramps_idx.get(rel_key, []):
+                    rlat = rel_entry.get('birth_lat') or rel_entry.get('death_lat')
+                    rlon = rel_entry.get('birth_lon') or rel_entry.get('death_lon')
+                    if rlat is not None and rlon is not None:
+                        rel_lats.append(float(rlat))
+                        rel_lons.append(float(rlon))
+            if rel_lats:
+                p_lat = sum(rel_lats) / len(rel_lats)
+                p_lon = sum(rel_lons) / len(rel_lons)
+
+        if p_lat is not None and p_lon is not None:
+            dist = haversine_km(wit_lat, wit_lon, float(p_lat), float(p_lon))
+            if dist is not None and dist > max_geo_km:
+                return False
+        else:
+            # Sin coordenadas propias ni de descendientes: rechazar para
+            # evitar falsos positivos con nombres comunes sin anclaje geográfico.
+            return False
+
+    return True
+
 def _cached_candidates(name_thr_val, max_dist_val, gramps_path_val, by_witness_keys):
     """
     Genera y cachea candidatos testigo↔GRAMPS usando session_state.
@@ -6916,7 +6998,14 @@ def page_posibles_familiares():
                     wc_norm = normalize(wc)
                     candidates = gramps_idx.get(wc_norm, [])
                     if candidates:
-                        gramps_links_enriched["confirmed"][wc] = candidates[0].get("id", "")
+                        wit_events = by_wit_local[wc]
+                        # Si hay varios homónimos en el árbol, elegir el más plausible
+                        # descartando los que sean temporal o geográficamente imposibles.
+                        plausible = [c for c in candidates
+                                     if _is_plausible_gramps_match(wit_events, c,
+                                                                    gramps_idx=gramps_idx)]
+                        if plausible:
+                            gramps_links_enriched["confirmed"][wc] = plausible[0].get("id", "")
 
                 # Construir kinship_map indexado por event_id para mayor precisión.
                 # find_kinship_with_subject devuelve [{subj_name, kinship_label, degree, ...}]
