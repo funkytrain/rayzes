@@ -995,7 +995,7 @@ def render_sidebar():
         t("menu_explorar"), t("menu_mapa"), t("menu_grafo"), t("menu_superpadrinos"),
         t("menu_notas"), t("menu_analisis"), t("menu_timeline"), t("menu_confirmar"),
         t("menu_bayesiana"), t("menu_pendientes"), t("menu_trayectoria"), t("menu_informe"),
-        t("menu_testigos_arbol"), t("menu_posibles_familiares"),
+        t("menu_posibles_familiares"),
         t("menu_identity_resolution"),
     ]
     _override = st.session_state.get('tst_menu_override')
@@ -1147,8 +1147,6 @@ def render_page():
         page_trayectoria_vital()
     elif menu == t("menu_informe"):
         page_informe()
-    elif menu == t("menu_testigos_arbol"):
-        page_testigos_arbol()
     elif menu == t("menu_posibles_familiares"):
         page_posibles_familiares()
     elif menu == t("menu_identity_resolution"):
@@ -7274,30 +7272,35 @@ def page_identity_resolution():
             st.info(t("ir_no_data"))
             return
 
-    # Métricas
+    # Métricas (excluye pares ya gestionados en sesión)
     n_auto   = sum(1 for p in pairs_data if p.get('recommendation') == 'auto_merge')
     n_review = sum(1 for p in pairs_data if p.get('recommendation') == 'review')
     n_diff   = sum(1 for p in pairs_data if p.get('recommendation') == 'different')
+    n_confirmed = sum(1 for p in pairs_data if p.get('recommendation') == 'confirmed')
+    n_discarded = sum(1 for p in pairs_data if p.get('recommendation') == 'discarded')
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(t("ir_metric_auto"),      n_auto)
     c2.metric(t("ir_metric_review"),    n_review)
     c3.metric(t("ir_metric_discarded"), n_diff)
+    c4.metric("✅ Gestionados", n_confirmed + n_discarded)
     if run_ts:
-        c4.markdown(f"*Último análisis: {run_ts}*")
+        st.caption(f"Último análisis: {run_ts}")
 
     # Filtro
     filter_opt = st.radio(
-        "",
+        "Filtro",
         [t("ir_filter_all"), t("ir_filter_auto"), t("ir_filter_review")],
         horizontal=True,
         key="ir_filter",
+        label_visibility="collapsed",
     )
+    _active = [p for p in pairs_data if p.get('recommendation') not in ('confirmed', 'discarded')]
     if filter_opt == t("ir_filter_auto"):
-        filtered = [p for p in pairs_data if p.get('recommendation') == 'auto_merge']
+        filtered = [p for p in _active if p.get('recommendation') == 'auto_merge']
     elif filter_opt == t("ir_filter_review"):
-        filtered = [p for p in pairs_data if p.get('recommendation') == 'review']
+        filtered = [p for p in _active if p.get('recommendation') == 'review']
     else:
-        filtered = pairs_data
+        filtered = _active
 
     if not filtered:
         st.info(t("ir_no_data"))
@@ -7354,6 +7357,51 @@ def page_identity_resolution():
             st.write(f"Lugares: {', '.join(places_p[:5]) if places_p else '—'}")
             st.write(f"GRAMPS ID: {pair.get('gramps_id', '')}")
 
+        # ── Ficha enriquecida de la persona en el árbol ───────────────────────
+        gramps_path = get_active_gramps_path()
+        if gramps_path:
+            gi_rich = _get_gramps_index_rich(gramps_path)
+            gp_detail = None
+            for pers_list in gi_rich.values():
+                for p_ in pers_list:
+                    if p_.get('id') == pair.get('gramps_id'):
+                        gp_detail = p_
+                        break
+                if gp_detail:
+                    break
+            if gp_detail:
+                extra_lines = []
+                if gp_detail.get('parents'):
+                    extra_lines.append(f"· {t('testigos_arbol_padres')}: {', '.join(gp_detail['parents'])}")
+                if gp_detail.get('spouses'):
+                    extra_lines.append(f"· {t('testigos_arbol_conyuges')}: {', '.join(gp_detail['spouses'])}")
+                if gp_detail.get('children'):
+                    extra_lines.append(f"· {t('testigos_arbol_hijos')}: {', '.join(gp_detail['children'][:8])}")
+                if extra_lines:
+                    with st.expander(t('testigos_arbol_persona'), expanded=False):
+                        for line in extra_lines:
+                            st.write(line)
+                        if gp_detail.get('notes'):
+                            st.markdown(f"*{t('testigos_arbol_notas')}:*")
+                            for note_txt in gp_detail['notes']:
+                                st.caption(note_txt)
+
+                # ── Parentesco con sujetos de los eventos ─────────────────────
+                kin_links = find_kinship_with_subject(
+                    gp_detail,
+                    by_witness.get(pair.get('witness_name', ''), []),
+                    gi_rich,
+                )
+                if kin_links:
+                    st.markdown(f"**{t('testigos_arbol_parentesco')}:**")
+                    for kl in kin_links[:8]:
+                        degree_str = f" *(gr. {kl['degree']})*" if kl['degree'] > 0 else ""
+                        if kl.get('source') == 'note':
+                            st.write(f"· {kl['kinship_label']}{degree_str} de **{kl['subj_name']}** "
+                                     f"*(🗒 {t('kinship_from_note')}: \"{kl['note_mention']}\")*")
+                        else:
+                            st.write(f"· {kl['kinship_label']}{degree_str} de **{kl['subj_name']}**")
+
         br = pair.get('bayesian_result') or {}
         fc = br.get('feature_contributions') or {}
         if fc:
@@ -7376,7 +7424,7 @@ def page_identity_resolution():
         if explanation:
             st.info(explanation)
 
-        b1, b2, b3 = st.columns(3)
+        b1, b2 = st.columns(2)
         with b1:
             if st.button(t("ir_confirm_btn"), key=f"ir_confirm_{cur_idx}", type="primary"):
                 _store.load()
@@ -7386,6 +7434,13 @@ def page_identity_resolution():
                     pair.get('person_name', ''),
                 )
                 _store.save()
+                witness_name = pair.get('witness_name', '')
+                ir_pairs = st.session_state.get('ir_pairs', [])
+                for p in ir_pairs:
+                    if p.get('witness_name') == witness_name and p.get('pid') == pair.get('pid'):
+                        p['recommendation'] = 'confirmed'
+                        break
+                st.session_state['ir_pairs'] = ir_pairs
                 st.session_state['ir_current_idx'] = None
                 st.rerun()
         with b2:
@@ -7393,12 +7448,81 @@ def page_identity_resolution():
                 _store.load()
                 _store.discard_gramps_link(pair.get('witness_name', ''))
                 _store.save()
+                witness_name = pair.get('witness_name', '')
+                ir_pairs = st.session_state.get('ir_pairs', [])
+                for p in ir_pairs:
+                    if p.get('witness_name') == witness_name and p.get('pid') == pair.get('pid'):
+                        p['recommendation'] = 'discarded'
+                        break
+                st.session_state['ir_pairs'] = ir_pairs
                 st.session_state['ir_current_idx'] = None
                 st.rerun()
-        with b3:
-            if st.button(t("ir_skip_btn"), key=f"ir_skip_{cur_idx}"):
-                next_idx = cur_idx + 1
-                st.session_state['ir_current_idx'] = next_idx if next_idx < len(filtered) else None
-                st.rerun()
+
+    # ── Sección de descartados (sesión actual) ────────────────────────────────
+    discarded_pairs = [p for p in pairs_data if p.get('recommendation') == 'discarded']
+    if discarded_pairs:
+        with st.expander(f"Descartados en esta sesión ({len(discarded_pairs)})", expanded=False):
+            for i, p in enumerate(discarded_pairs):
+                col_name, col_btn = st.columns([4, 1])
+                col_name.write(f"**{p.get('witness_name', '')}** → {p.get('person_name', '')}  "
+                               f"({p.get('probability', 0):.0%})")
+                if col_btn.button("Recuperar", key=f"ir_restore_{i}"):
+                    _store.load()
+                    _store.restore_gramps_link(p.get('witness_name', ''))
+                    _store.save()
+                    ir_pairs = st.session_state.get('ir_pairs', [])
+                    for q in ir_pairs:
+                        if q.get('witness_name') == p.get('witness_name') and q.get('pid') == p.get('pid'):
+                            q['recommendation'] = 'review'
+                            break
+                    st.session_state['ir_pairs'] = ir_pairs
+                    st.rerun()
+
+    # ── Confirmados persistidos ───────────────────────────────────────────────
+    st.markdown("---")
+    _store.load()
+    confirmed_map = _store.get_all().get('gramps_links', {}).get('confirmed', {})
+    if confirmed_map:
+        with st.expander(f"✅ Confirmados ({len(confirmed_map)})", expanded=False):
+            gramps_path = get_active_gramps_path()
+            gi_rich_c = _get_gramps_index_rich(gramps_path) if gramps_path else {}
+            for wit_c, link_data in list(confirmed_map.items()):
+                pid_c   = link_data.get('pid', '') if isinstance(link_data, dict) else str(link_data)
+                pname_c = link_data.get('name', pid_c) if isinstance(link_data, dict) else gramps_id_map.get(str(link_data), str(link_data))
+                with st.expander(f"✅ {wit_c}  →  {pname_c}", expanded=False):
+                    # Ficha de la persona confirmada
+                    gp_c = None
+                    for pers_list in gi_rich_c.values():
+                        for p_ in pers_list:
+                            if p_.get('id') == pid_c:
+                                gp_c = p_
+                                break
+                        if gp_c:
+                            break
+                    if gp_c:
+                        birth_str = str(gp_c.get('birth_year') or '—')
+                        if gp_c.get('birth_place'):
+                            birth_str += f", {gp_c['birth_place']}"
+                        death_str = str(gp_c.get('death_year') or '—')
+                        if gp_c.get('death_place'):
+                            death_str += f", {gp_c['death_place']}"
+                        st.write(f"· {t('testigos_arbol_nacimiento')}: {birth_str}")
+                        st.write(f"· {t('testigos_arbol_defuncion')}: {death_str}")
+                        if gp_c.get('parents'):
+                            st.write(f"· {t('testigos_arbol_padres')}: {', '.join(gp_c['parents'])}")
+                        if gp_c.get('spouses'):
+                            st.write(f"· {t('testigos_arbol_conyuges')}: {', '.join(gp_c['spouses'])}")
+                        if gp_c.get('children'):
+                            st.write(f"· {t('testigos_arbol_hijos')}: {', '.join(gp_c['children'][:8])}")
+                        if gp_c.get('notes'):
+                            st.markdown(f"*{t('testigos_arbol_notas')}:*")
+                            for note_txt in gp_c['notes']:
+                                st.caption(note_txt)
+                    if st.button(t("testigos_arbol_revertir"), key=f"ir_rev_conf_{wit_c}"):
+                        _store.load()
+                        _store.restore_gramps_link(wit_c)
+                        _store.get_all().get('gramps_links', {}).get('confirmed', {}).pop(wit_c, None)
+                        _store.save()
+                        st.rerun()
 
 

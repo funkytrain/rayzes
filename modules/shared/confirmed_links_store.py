@@ -155,6 +155,13 @@ class ConfirmedLinksStore:
         if name not in discarded:
             discarded.append(name)
 
+    def restore_gramps_link(self, name: str) -> None:
+        """Elimina un testigo de la lista de descartados, dejándolo sin decisión."""
+        gl = self._data.setdefault('gramps_links', {'confirmed': {}, 'discarded': []})
+        discarded = gl.setdefault('discarded', [])
+        if name in discarded:
+            discarded.remove(name)
+
     def set_event_group(self, gid: str, events: list) -> None:
         self._data.setdefault('event_groups', {})[gid] = events
 
