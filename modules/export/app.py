@@ -198,6 +198,7 @@ def render_page() -> None:
 
             if include_confirmations and confirmed_links:
                 n_added_conf = writer.add_confirmation_notes(confirmed_links)
+                writer.add_witness_attribute_notes(confirmed_links)
 
             if include_tags and active_issues:
                 n_added_tags = writer.add_inconsistency_tags(active_issues)

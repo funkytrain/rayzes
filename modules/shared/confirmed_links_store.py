@@ -145,7 +145,16 @@ class ConfirmedLinksStore:
 
     def link_to_gramps(self, name: str, pid: str, pname: str, user: str = "admin") -> None:
         gl = self._data.setdefault('gramps_links', {'confirmed': {}, 'discarded': []})
-        gl['confirmed'][name] = {'pid': pid, 'name': pname}
+        existing = gl['confirmed'].get(name, {})
+        gl['confirmed'][name] = {'pid': pid, 'name': pname, 'note': existing.get('note', '')}
+
+    def set_link_note(self, name: str, note: str) -> None:
+        gl = self._data.setdefault('gramps_links', {'confirmed': {}, 'discarded': []})
+        if name in gl['confirmed']:
+            gl['confirmed'][name]['note'] = note
+
+    def get_link_note(self, name: str) -> str:
+        return self._data.get('gramps_links', {}).get('confirmed', {}).get(name, {}).get('note', '')
 
     def discard_gramps_link(self, name: str, user: str = "admin") -> None:
         gl = self._data.setdefault('gramps_links', {'confirmed': {}, 'discarded': []})

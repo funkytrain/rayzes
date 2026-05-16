@@ -339,6 +339,48 @@ class GrampsWriter:
             added += 1
         return added
 
+    def add_witness_attribute_notes(self, confirmed_links: dict) -> int:
+        """
+        Para cada link confirmado que tenga nota:
+          {witness_name: {pid, name, note}}
+        → Busca en todos los eventos del XML el <attribute type="Witness" value="{witness_name}">
+          y añade la nota como <noteref> dentro de ese atributo.
+        Evita duplicados comprobando el prefijo de la nota.
+        Devuelve n notas añadidas.
+        """
+        added = 0
+        for witness_name, link in confirmed_links.items():
+            if not isinstance(link, dict):
+                continue
+            note_text = link.get('note', '').strip()
+            if not note_text:
+                continue
+
+            prefix = f"[GenHelper] {note_text[:40]}"
+
+            for ev_el in self._root.iter():
+                if _tag_local(ev_el).lower() != 'event':
+                    continue
+                for attr_el in ev_el:
+                    if _tag_local(attr_el).lower() != 'attribute':
+                        continue
+                    if attr_el.get('type') != 'Witness':
+                        continue
+                    if (attr_el.get('value') or '').strip().lower() != witness_name.strip().lower():
+                        continue
+                    # Comprobar si ya existe una nota con ese prefijo en el atributo
+                    if self._note_already_exists(attr_el, f"[GenHelper] {note_text[:40]}"):
+                        continue
+                    text = f"[GenHelper] {note_text}"
+                    self._add_note_to_element(attr_el, text)
+                    self.changelog.append({
+                        'type': 'witness_note',
+                        'witness': witness_name,
+                        'note': note_text,
+                    })
+                    added += 1
+        return added
+
     def add_inconsistency_tags(self, active_issues: list[dict]) -> int:
         """
         Para cada inconsistencia activa:

@@ -7513,6 +7513,14 @@ def page_identity_resolution():
         if explanation:
             st.info(explanation)
 
+        pending_note = st.text_area(
+            "Nota de identificación (opcional)",
+            value=st.session_state.get(f"ir_pending_note_{cur_idx}", ""),
+            key=f"ir_pending_note_{cur_idx}",
+            placeholder="Ej: Mismo Diego Yllescas que aparece como padrino en el bautismo de 1681.",
+            height=80,
+        )
+
         b1, b2 = st.columns(2)
         with b1:
             if st.button(t("ir_confirm_btn"), key=f"ir_confirm_{cur_idx}", type="primary"):
@@ -7522,6 +7530,8 @@ def page_identity_resolution():
                     pair.get('pid', ''),
                     pair.get('person_name', ''),
                 )
+                if pending_note.strip():
+                    _store.set_link_note(pair.get('witness_name', ''), pending_note.strip())
                 _store.save()
                 witness_name = pair.get('witness_name', '')
                 ir_pairs = st.session_state.get('ir_pairs', [])
@@ -7607,6 +7617,24 @@ def page_identity_resolution():
                             st.markdown(f"*{t('testigos_arbol_notas')}:*")
                             for note_txt in gp_c['notes']:
                                 st.caption(note_txt)
+
+                    # Nota de identificación editable
+                    current_note = link_data.get('note', '') if isinstance(link_data, dict) else ''
+                    note_key = f"ir_conf_note_{wit_c}"
+                    edited_note = st.text_area(
+                        "Nota de identificación",
+                        value=st.session_state.get(note_key, current_note),
+                        key=note_key,
+                        placeholder="Añade aquí el razonamiento o evidencia de la identificación.",
+                        height=80,
+                    )
+                    if st.button("Guardar nota", key=f"ir_save_note_{wit_c}"):
+                        _store.load()
+                        _store.set_link_note(wit_c, edited_note.strip())
+                        _store.save()
+                        st.success("Nota guardada.")
+                        st.rerun()
+
                     if st.button(t("testigos_arbol_revertir"), key=f"ir_rev_conf_{wit_c}"):
                         _store.load()
                         _store.restore_gramps_link(wit_c)
