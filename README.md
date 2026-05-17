@@ -16,6 +16,7 @@ A web-based genealogical research platform for analyzing witness/godparent netwo
   - [ADN & Genetics](#adn--genetics)
   - [Migration Intelligence](#migration-intelligence)
   - [Family Completion Engine](#family-completion-engine) *(includes manual Candidate Identification)*
+  - [Investigación — Archive Document Search](#investigación--archive-document-search)
   - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
   - [AI Genealogy Assistant (RAG)](#ai-genealogy-assistant-rag)
 - [AI Integration across modules](#ai-integration-across-modules)
@@ -727,6 +728,77 @@ For the selected case, shows:
 
 ---
 
+### Investigación — Archive Document Search
+
+This module automates the discovery of historical documents for witnesses of significant social standing. It scans all confirmed witnesses across the loaded GRAMPS file, identifies those whose event notes classify them as high-ranking or professionally notable, and searches national historical archives on their behalf.
+
+---
+
+#### How it works
+
+1. **Candidate detection**: the module reads the witness dataset (shared via session state from the Testigos module) and filters for witnesses whose notes classify as `rango_social` (social rank) or a relevant profession — notaries, surgeons, clergy, merchants, military officers, etc. Only witnesses appearing in at least two events are considered (configurable).
+2. **Country detection**: each witness's known places of activity are matched against an index of ~300 historical toponyms covering 9 countries. The module automatically proposes the most likely country of origin. The user can override this at the module level or per witness.
+3. **Archive selection**: based on the detected country, the module selects the appropriate national archive(s). If automatic search is feasible (currently only PARES for Spain), it runs the search pipeline. For all other countries, it generates direct links the user can open manually.
+4. **LLM query generation** *(requires local LLM)*: the assistant generates 2–3 targeted archive search queries in the appropriate language, using the witness's name, notes, probable dates, and places as context.
+5. **Document scraping and evaluation**: for scrapable sources (PARES), the queries are executed and the returned document titles are sent back to the LLM, which scores each one for relevance (0–10) and provides a brief explanation.
+6. **Result display**: documents are shown with colour-coded relevance badges (high / medium / low) and a summary of why each one may relate to the witness. Direct search links are always included alongside any automatically retrieved results.
+7. **Cache persistence**: all search results are saved to `data/archive_findings.json` keyed by witness name + note, so they survive page reloads and new sessions. A "clear cache" button per witness forces a fresh search.
+
+---
+
+#### Supported archives by country
+
+| Country | Archive | Search type |
+|---------|---------|------------|
+| 🇪🇸 Spain | [PARES](https://pares.mcu.es) (Portal de Archivos Españoles) | Automatic scraping |
+| 🇵🇹 Portugal | [Digitarq](https://digitarq.arquivos.pt) · [FamilySearch PT](https://www.familysearch.org) | Direct link only |
+| 🇫🇷 France | [Archives nationales](https://www.archives-nationales.culture.gouv.fr) · [FranceArchives](https://francearchives.gouv.fr) | Direct link only |
+| 🇩🇪 Germany | [Archivportal-D](https://www.archivportal-d.de) · [Matricula](https://data.matricula-online.eu) | Direct link only |
+| 🇮🇹 Italy | [SAN](https://san.beniculturali.it) · [FamilySearch IT](https://www.familysearch.org) | Direct link only |
+| 🇬🇧 UK | [The National Archives](https://www.nationalarchives.gov.uk) · [FindMyPast](https://www.findmypast.co.uk) | Direct link only |
+| 🇷🇺 Russia | [RGADA](https://rgada.info) · [Ancestry](https://www.ancestry.com) | Direct link only |
+| 🇸🇦 Arab world | [QNLHD](https://www.qnl.qa/en/research/heritage) | Direct link only |
+| 🇨🇳 East Asia | [CBDB](https://projects.iq.harvard.edu/cbdb) | Direct link only |
+
+Archives marked "Direct link only" require either a login, a JavaScript-heavy SPA interface not amenable to scraping, or a script-specific transcription system. The app shows a clear warning explaining the reason in each case, so the user knows what to expect before clicking.
+
+---
+
+#### Archive search panel in Superpadrinos
+
+An archive search expander is also embedded directly in the **Superpadrinos** (Top Witnesses) profile page. For any top witness whose notes qualify them as important, the expander allows:
+
+- Selecting the country (auto-detected from place names)
+- Running a targeted archive search for that individual
+- Viewing cached results from a previous search
+- Clearing the cache to force a fresh search
+
+This allows the user to investigate a specific witness without navigating to the Investigación module.
+
+---
+
+#### Configuration
+
+The LLM settings used by the archive search pipeline are the same shared settings as the AI Assistant:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| LLM server URL | `http://127.0.0.1:9292/v1` | Base URL of any OpenAI-compatible API |
+| Model name | `qwen3-14b` | Model identifier sent in the request |
+| Response timeout | 300 s | Maximum wait time for LLM response |
+
+These settings are shown in the sidebar when the Investigación section is active and are kept in sync with the AI Assistant configuration.
+
+---
+
+#### Persistent data
+
+| File | Purpose |
+|------|---------|
+| `data/archive_findings.json` | Cached archive search results per witness + note; keyed by `{witness_name}::{note}` |
+
+---
+
 ### Export to GRAMPS (Write-back)
 
 This module closes the research loop: it takes all the analytical work done in Rayzes — confirmed witness identities, detected inconsistencies, and Family Completion Engine candidates — and writes them back into the original GRAMPS file as standard notes and tags, without any third-party dependency.
@@ -872,6 +944,7 @@ The local AI assistant is not limited to its own dedicated section. It is embedd
 | **General → Historical Context** | Timeline tab, after selecting an individual or family | Contextualised historical narrative weaving personal events with uploaded municipal history documents |
 | **Family Completion → Candidate Identification** | After the scoring results and rule-based narrative | Enriched interpretive commentary on the ranked candidates, evidence strengths, and suggested record types to search next |
 | **Family Completion → Completion Engine** | Detail tab, at the bottom of each case | Plain-language explanation of the top candidate's probable filiation and recommended next steps |
+| **Investigación → Archive Document Search** | Search pipeline for each witness candidate | Generates targeted archive query strings and evaluates returned document titles for relevance, with a 0–10 score and brief explanation per document |
 
 ### How the shared index works
 
@@ -945,6 +1018,7 @@ The following files in `data/` are created and updated automatically as you use 
 | `historical/<place>.json` | Historical events uploaded per municipality for the Historical Context sub-page |
 | `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine; fed into Export candidate notes |
 | `identity_resolution_results.json` | Scored candidate pairs from the Tree–Witness Identity Resolution page |
+| `archive_findings.json` | Cached historical archive search results per witness (keyed by name + note); produced by the Investigación module and the Superpadrinos archive panel |
 | `rag_index/` | Search index for the AI Assistant (chunks, TF-IDF matrix, optional embeddings, pre-computed statistics); rebuilt automatically when source data changes |
 
 These files persist between sessions. Back them up if you want to preserve your review work.

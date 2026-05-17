@@ -1017,6 +1017,20 @@ def render_sidebar():
     st.sidebar.radio(t("sidebar_goto"), _menu_options, index=_menu_default_idx, key="tst_menu")
 
     current_text = st.session_state.get("tst_menu", _menu_options[0])
+
+    # ── Configuración LLM (compartida con RAG assistant) ────────────────────
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(t("sidebar_llm_header"))
+    st.sidebar.text_input(
+        t("sidebar_llm_url"),
+        value=st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1"),
+        key="rag_llm_base_url",
+    )
+    st.sidebar.text_input(
+        t("sidebar_llm_model"),
+        value=st.session_state.get("rag_llm_model", "qwen3-14b"),
+        key="rag_llm_model",
+    )
     st.session_state['tst_menu_idx'] = _menu_options.index(current_text) if current_text in _menu_options else _menu_default_idx
     st.session_state["tst_active_page"] = _menu_options[st.session_state['tst_menu_idx']]
 
@@ -1115,6 +1129,8 @@ def render_page():
     gramps_index = dataset.gramps_index
     gramps_id_map = dataset.gramps_id_map
     by_witness = dataset.by_witness
+    st.session_state['tst_df_global'] = df
+    st.session_state['tst_by_witness'] = by_witness
     MAP_MODE = dataset.map_mode
     YEAR_FROM = dataset.year_from
     YEAR_TO = dataset.year_to
@@ -1709,6 +1725,191 @@ def _render_witness_profile(witness_name: str):
         for ln in life_notes:
             st.write(f"  - {ln}")
 
+    # ── Búsqueda de documentos de archivo ──────────────────────────────────
+    _render_archive_search_panel(witness_name, wit_sorted)
+
+
+def _render_country_selector(places: list[str], key_suffix: str = "") -> str:
+    """
+    Muestra un selector de país para la búsqueda de archivo.
+    Detecta automáticamente el país por los topónimos y permite corrección manual.
+    Devuelve el código de país seleccionado.
+    """
+    from modules.testigos.archive_sources import detect_country_from_places, ARCHIVE_SOURCES
+    from modules.testigos.surname_systems import SURNAME_SYSTEMS
+
+    detected = detect_country_from_places(places) or "es"
+
+    lang = get_lang()
+    country_options = []
+    country_codes = []
+    for code, sources in ARCHIVE_SOURCES.items():
+        if sources:
+            label = sources[0].country_name_es if lang == "es" else sources[0].country_name_en
+            country_options.append(f"{label} ({code.upper()})")
+            country_codes.append(code)
+
+    default_idx = country_codes.index(detected) if detected in country_codes else 0
+    key = f"arch_country_{key_suffix}"
+
+    chosen_label = st.selectbox(
+        t("archive_country_selector"),
+        country_options,
+        index=default_idx,
+        key=key,
+        help=t("archive_country_help"),
+    )
+    chosen_idx = country_options.index(chosen_label)
+    chosen_code = country_codes[chosen_idx]
+
+    # Mostrar aviso si alguna fuente del país no admite búsqueda automática
+    from modules.testigos.archive_sources import get_sources_for_country
+    sources = get_sources_for_country(chosen_code)
+    manual_sources = [s for s in sources if not s.can_scrape and s.url_template and s.manual_only_reason_es]
+    if manual_sources and not any(s.can_scrape for s in sources):
+        st.info(
+            t("archive_manual_only_warning") + "\n\n" +
+            "\n".join(f"- **{s.name}**: {s.manual_only_reason_es if lang == 'es' else s.manual_only_reason_en}"
+                      for s in manual_sources[:3])
+        )
+
+    return chosen_code
+
+
+def _render_archive_search_panel(witness_name: str, wit_sorted):
+    """Sección de búsqueda de documentos históricos en archivos para un testigo."""
+    from modules.testigos.archive_search import (
+        is_important_witness, get_important_witnesses,
+        WitnessArchiveResult, search_archive_for_witness,
+    )
+    from modules.testigos.archive_search_store import (
+        load_store, save_store, get_cached, put_result, clear_result,
+    )
+
+    # Determinar si el testigo es "importante"
+    notes_rows = wit_sorted[
+        wit_sorted['note'].notna() & (wit_sorted['note'].astype(str).str.strip() != "")
+    ]['note'].astype(str).unique().tolist()
+
+    if not notes_rows:
+        return
+
+    important_notes = [
+        (note, classify_note(note))
+        for note in notes_rows
+        if is_important_witness(note, classify_note(note))
+    ]
+    if not important_notes:
+        return
+
+    st.markdown("---")
+    with st.expander(t("archive_search_expander"), expanded=False):
+        note_text, note_cat = important_notes[0]
+        st.caption(f"**{t('archive_note_label')}** {note_text}  ·  **{t('archive_cat_label')}** {note_cat}")
+
+        # Config LLM
+        base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
+        model = st.session_state.get("rag_llm_model", "qwen3-14b")
+        llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+
+        # Años y lugares
+        years = []
+        for _, row in wit_sorted.iterrows():
+            d = row.get('date_iso', '')
+            if d:
+                try:
+                    y = int(str(d)[:4])
+                    if 1000 < y < 2100:
+                        years.append(y)
+                except Exception:
+                    pass
+        places = list({str(row.get('place_name', '')) for _, row in wit_sorted.iterrows() if row.get('place_name')})
+        raw_name = str(wit_sorted['witness_raw'].iloc[0]) if 'witness_raw' in wit_sorted.columns else witness_name
+
+        # Selector de país
+        country_code = _render_country_selector(
+            places=sorted(places),
+            key_suffix=f"profile_{witness_name[:20]}",
+        )
+
+        candidate = WitnessArchiveResult(
+            witness_name=raw_name,
+            witness_norm=witness_name,
+            note=note_text,
+            note_category=note_cat,
+            year_min=min(years) if years else None,
+            year_max=max(years) if years else None,
+            places=sorted(places),
+            country_code=country_code,
+        )
+
+        # Cargar store y comprobar caché
+        store = load_store()
+        cached = get_cached(store, candidate)
+
+        col_btn, col_clr = st.columns([3, 1])
+        search_clicked = col_btn.button(
+            t("archive_search_btn"),
+            key=f"arch_search_{witness_name}",
+            help=t("archive_search_help"),
+        )
+        if cached and col_clr.button(t("archive_clear_cache"), key=f"arch_clr_{witness_name}"):
+            clear_result(store, candidate)
+            save_store(store)
+            cached = None
+            st.rerun()
+
+        if search_clicked and not cached:
+            with st.spinner(t("archive_searching")):
+                result = search_archive_for_witness(
+                    candidate,
+                    base_url=base_url,
+                    model=model,
+                    llm_timeout=llm_timeout,
+                )
+            put_result(store, result)
+            save_store(store)
+            cached = result
+
+        if cached:
+            _render_archive_result(cached)
+        elif not search_clicked:
+            st.info(t("archive_not_searched_yet"))
+
+
+def _render_archive_result(result):
+    """Muestra los documentos encontrados y el resumen del LLM."""
+    if result.search_status == "error":
+        st.error(f"{result.error_msg}")
+        return
+
+    if result.llm_summary:
+        st.info(f"**{result.llm_summary}**")
+
+    if not result.documents:
+        st.warning(t("archive_no_docs"))
+        return
+
+    verified = [d for d in result.documents if d.relevance_score > 0]
+    links_only = [d for d in result.documents if d.relevance_score == 0]
+
+    if verified:
+        st.markdown(f"**{t('archive_docs_found', n=len(verified))}**")
+        for doc in verified:
+            score_pct = int(doc.relevance_score * 100)
+            color = "#2e7d32" if score_pct >= 70 else ("#f57c00" if score_pct >= 40 else "#c62828")
+            badge = f'<span style="background:{color};color:white;padding:2px 8px;border-radius:10px;font-size:0.8em">{score_pct}%</span>'
+            st.markdown(
+                f"{badge} **[{doc.title}]({doc.url})**  \n"
+                f"<small>_{doc.archive}_  ·  {doc.relevance_reason}</small>",
+                unsafe_allow_html=True,
+            )
+
+    if links_only:
+        st.markdown(f"**{t('archive_search_links')}**")
+        for doc in links_only:
+            st.markdown(f"- [{doc.title}]({doc.url})")
+
 
 def page_superpadrinos():
     st.header(t("hdr_superpadrinos"))
@@ -1991,6 +2192,140 @@ def page_notas():
                 save_note_category_overrides({})
                 st.success(t("notas_borradas"))
                 st.rerun()
+
+def _render_notas_archive_section_UNUSED(nf):
+    """Sección de búsqueda de documentos de archivo desde la página Notas."""
+    from modules.testigos.archive_search import (
+        is_important_witness, WitnessArchiveResult, search_archive_for_witness,
+    )
+    from modules.testigos.archive_search_store import (
+        load_store, save_store, get_cached, put_result, clear_result,
+    )
+
+    _cur_overrides = st.session_state.get('tst_note_category_overrides', {})
+
+    # Filtrar filas con categoría importante
+    important_rows = []
+    seen_keys = set()
+    for _, row in nf.iterrows():
+        note_text = str(row.get('note', '')).strip()
+        if not note_text or note_text in ('nan', 'None'):
+            continue
+        cat = classify_note(note_text, _cur_overrides)
+        if not is_important_witness(note_text, cat):
+            continue
+        witness_name = str(row.get('witness_raw', '')).strip()
+        if not witness_name or witness_name in ('nan', 'None'):
+            continue
+        key = (witness_name, note_text)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        # Datos temporales y geográficos del testigo en este dataset filtrado
+        wit_rows = nf[nf['witness_raw'].astype(str) == witness_name] if 'witness_raw' in nf.columns else nf.iloc[:0]
+        years = []
+        for d in wit_rows['date_iso'].dropna():
+            try:
+                y = int(str(d)[:4])
+                if 1000 < y < 2100:
+                    years.append(y)
+            except Exception:
+                pass
+        places = list({str(p) for p in wit_rows['place_name'].dropna() if str(p) not in ('', 'nan')})
+
+        important_rows.append(WitnessArchiveResult(
+            witness_name=witness_name,
+            witness_norm=witness_name.lower(),
+            note=note_text,
+            note_category=cat,
+            year_min=min(years) if years else None,
+            year_max=max(years) if years else None,
+            places=sorted(places),
+        ))
+
+    if not important_rows:
+        return
+
+    with st.expander(t("notas_archive_expander", n=len(important_rows)), expanded=False):
+        st.caption(t("notas_archive_caption"))
+
+        base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
+        model = st.session_state.get("rag_llm_model", "qwen3-14b")
+        llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+
+        store = load_store()
+
+        # Botón "Buscar todos"
+        n_uncached = sum(1 for r in important_rows if not get_cached(store, r))
+        col_all, col_info = st.columns([2, 3])
+        search_all = col_all.button(
+            t("arch_search_all_btn"),
+            key="notas_arch_search_all",
+        )
+        col_info.caption(t("arch_uncached_info", n=n_uncached, total=len(important_rows)))
+
+        if search_all:
+            progress = st.progress(0, text=t("arch_searching_all"))
+            for i, candidate in enumerate(important_rows):
+                if get_cached(store, candidate):
+                    progress.progress((i + 1) / len(important_rows), text=f"{candidate.witness_name}…")
+                    continue
+                try:
+                    result = search_archive_for_witness(
+                        candidate, base_url=base_url, model=model, llm_timeout=llm_timeout
+                    )
+                    put_result(store, result)
+                except Exception as e:
+                    candidate.search_status = "error"
+                    candidate.error_msg = str(e)
+                    put_result(store, candidate)
+                progress.progress((i + 1) / len(important_rows), text=f"{candidate.witness_name}…")
+            save_store(store)
+            progress.empty()
+            st.rerun()
+
+        st.markdown("---")
+        for candidate in important_rows:
+            cached = get_cached(store, candidate)
+            effective = cached or candidate
+            n_docs = len(effective.documents) if effective.search_status == "searched" else 0
+            status_icon = {"pending": "⏳", "searched": "✅" if n_docs > 0 else "🔍", "error": "❌"}.get(effective.search_status, "⏳")
+            year_str = f" · {candidate.year_min}–{candidate.year_max}" if candidate.year_min else ""
+            places_str = ", ".join(candidate.places[:2]) if candidate.places else ""
+
+            header = f"{status_icon} **{candidate.witness_name}** — _{candidate.note}_{year_str}"
+            if places_str:
+                header += f" · {places_str}"
+
+            with st.expander(header, expanded=(effective.search_status == "searched" and n_docs > 0)):
+                col_s, col_c = st.columns([2, 1])
+                search_clicked = col_s.button(
+                    t("archive_search_btn"),
+                    key=f"notas_arch_{candidate.witness_norm[:30]}_{candidate.note[:15]}",
+                )
+                if cached and col_c.button(
+                    t("archive_clear_cache"),
+                    key=f"notas_clr_{candidate.witness_norm[:30]}_{candidate.note[:15]}",
+                ):
+                    clear_result(store, candidate)
+                    save_store(store)
+                    st.rerun()
+
+                if search_clicked:
+                    with st.spinner(t("archive_searching")):
+                        result = search_archive_for_witness(
+                            candidate, base_url=base_url, model=model, llm_timeout=llm_timeout
+                        )
+                    put_result(store, result)
+                    save_store(store)
+                    st.rerun()
+
+                if cached:
+                    _render_archive_result(cached)
+                else:
+                    st.caption(t("archive_not_searched_yet"))
+
 
 # ---------------- Fase 1 & 2: Funciones de análisis ----------------
 
