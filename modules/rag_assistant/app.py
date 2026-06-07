@@ -298,22 +298,27 @@ def render_llm_config_sidebar() -> None:
     )
 
 
-def render_sidebar() -> None:
-    shared_bytes = st.session_state.get("shared_gramps_bytes")
-    shared_name = st.session_state.get("shared_gramps_name", "")
-    if shared_bytes:
-        st.sidebar.success(f"📂 {shared_name}")
+def render_sidebar_upload() -> None:
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
     else:
-        uploaded = st.sidebar.file_uploader(
-            "Archivo .gramps",
-            type=["gramps", "xml"],
-            key="rag_gramps_uploader",
-        )
-        if uploaded:
-            uploaded.seek(0)
-            st.session_state["shared_gramps_bytes"] = uploaded.read()
-            st.session_state["shared_gramps_name"] = uploaded.name
+        shared_bytes = st.session_state.get("shared_gramps_bytes")
+        shared_name = st.session_state.get("shared_gramps_name", "")
+        if shared_bytes:
+            st.sidebar.success(f"📂 {shared_name}")
+        else:
+            uploaded = st.sidebar.file_uploader(
+                "Archivo .gramps",
+                type=["gramps", "xml"],
+                key="rag_gramps_uploader",
+            )
+            if uploaded:
+                uploaded.seek(0)
+                st.session_state["shared_gramps_bytes"] = uploaded.read()
+                st.session_state["shared_gramps_name"] = uploaded.name
 
+
+def render_sidebar() -> None:
     st.sidebar.markdown("---")
     render_llm_config_sidebar()
 
@@ -349,6 +354,9 @@ def render_page() -> None:
     st.caption(t("rag_page_caption"))
 
     content_bytes = st.session_state.get("shared_gramps_bytes")
+    if not content_bytes and not st.session_state.get("_gramps_web_db_override"):
+        st.info(t("rag_no_gramps_file"))
+        return
     if not content_bytes:
         st.info(t("rag_no_gramps_file"))
         return

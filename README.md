@@ -2,13 +2,18 @@
 
 > *"Por sus rayzes e antigua descendencia es conocido."*
 
-A web-based genealogical research platform for analyzing witness/godparent networks and consanguinity patterns in historical records. Built with Python and Streamlit, it processes GRAMPS XML database files and provides interactive visualizations, statistical analysis, and exportable reports.
+A web-based genealogical research platform for analyzing witness/godparent networks and consanguinity patterns in historical records. Built with Python and Streamlit, it processes GRAMPS data and provides interactive visualizations, statistical analysis, and exportable reports.
+
+Data can be loaded in two ways: by uploading a **GRAMPS XML file** (`.gramps`) exported from the desktop app, or by connecting directly to a **Gramps Web API** instance — so if you run Gramps Web on a home server or NAS, Rayzes can pull your latest tree with no manual export step.
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Data Sources](#data-sources)
+  - [File upload (GRAMPS XML)](#file-upload-gramps-xml)
+  - [Gramps Web API](#gramps-web-api)
 - [Modules](#modules)
   - [General (Tree Overview & Data Quality)](#general-tree-overview--data-quality)
   - [Testigos (Witness & Godparent Analysis)](#testigos-witness--godparent-analysis)
@@ -33,9 +38,40 @@ Rayzes is designed for genealogical researchers who need to go beyond basic fami
 - **Compadrazgo networks**: Who were the godparents in a community, how often did they appear, and which families did they connect?
 - **Genetic relatedness**: How inbred were historical populations, and which couples shared common ancestors?
 
-The app requires a **GRAMPS XML file** (`.gramps`) as input, which you upload at startup. All analysis is performed in-browser with no backend server required.
+All analysis is performed in-browser with no backend server required. A **language selector** (English / Spanish) is available at all times in the sidebar.
 
-A **language selector** (English / Spanish) is available at all times in the sidebar.
+---
+
+## Data Sources
+
+Rayzes supports two data sources that coexist seamlessly. Both produce an identical internal data model — every module works the same way regardless of which source is active.
+
+### File upload (GRAMPS XML)
+
+Upload a `.gramps` file exported from the GRAMPS desktop application. This is the classic workflow: export → upload → analyse. The uploaded file is shared across all modules for the duration of the session.
+
+### Gramps Web API
+
+Connect Rayzes directly to a **[Gramps Web](https://www.grampsweb.org/)** instance (self-hosted on a NAS, home server, or VPS). When connected, all modules read data live from the API — no manual export or upload needed.
+
+**How to connect:**
+
+1. Open the **🌐 Gramps Web API** expander in the sidebar (collapsed by default, between the file upload widget and the module selector)
+2. Enter the server URL (e.g. `http://192.168.1.x:5000` or your public domain)
+3. Enter your Gramps Web username and password
+4. Click **Connect**
+
+A green status indicator (`🟢 API: <url>`) confirms the connection. All modules switch to the API source automatically. To return to file-upload mode, click **Disconnect**.
+
+**Security notes:**
+
+- The password is deleted from memory immediately after the authentication token is obtained — it is never stored in session state
+- The Bearer token lives in browser memory only and is never written to disk
+- If the token expires, reconnect manually (no auto-refresh in the current version)
+
+**Keeping Gramps Web in sync with Gramps Desktop:**
+
+Gramps 6.0+ includes an official **[Sync addon](https://www.grampsweb.org/administration/sync/)** that pushes changes from the desktop app to Gramps Web. Install it via the GRAMPS Plugin Manager, configure it with your server URL and credentials, and run a sync after every editing session. Rayzes will then see your latest data on the next connection.
 
 ---
 
@@ -1003,7 +1039,10 @@ streamlit run main.py
 
 Open your browser at `http://localhost:8501`.
 
-On startup, you will be prompted to upload a `.gramps` file. This is the standard export format from the [GRAMPS genealogy application](https://gramps-project.org/).
+On startup you can either:
+
+- **Upload a `.gramps` file** — the standard export format from the [GRAMPS genealogy application](https://gramps-project.org/). Use *Family Trees → Export → GRAMPS XML* inside GRAMPS to generate it.
+- **Connect to Gramps Web API** — open the **🌐 Gramps Web API** expander in the sidebar, enter your server URL, username, and password, and click *Connect*. Requires a running [Gramps Web](https://www.grampsweb.org/) instance. See the [Data Sources](#data-sources) section for details.
 
 ### Persistent Data
 
@@ -1027,14 +1066,26 @@ These files persist between sessions. Back them up if you want to preserve your 
 
 ## Data Format
 
-Rayzes reads **GRAMPS XML files** (`.gramps` extension). This is the native export format of [GRAMPS](https://gramps-project.org/), a free and open-source genealogy program. To export from GRAMPS:
+Rayzes supports two data input methods:
+
+### GRAMPS XML file (`.gramps`)
+
+The native export format of [GRAMPS](https://gramps-project.org/), a free and open-source genealogy program.
+
+To export from GRAMPS:
 
 1. Open your database in GRAMPS
 2. Go to **Family Trees → Export**
 3. Choose **GRAMPS XML** as the format
 4. Save the `.gramps` file and upload it to Rayzes
 
-The app expects the file to contain people, families, events, and places. Witness references in events (roles: witness, godfather, godmother) are the primary data source for the Testigos module.
+### Gramps Web API
+
+If you run [Gramps Web](https://www.grampsweb.org/), Rayzes connects directly to its REST API (JWT authentication, paginated endpoints). No file export needed. See the [Gramps Web API](#gramps-web-api) section above for setup instructions.
+
+---
+
+Both sources produce an identical internal data model. The app expects people, families, events, and places to be present. Witness references in events (roles: witness, godfather, godmother) are the primary data source for the Testigos module.
 
 ---
 
@@ -1053,3 +1104,4 @@ The app expects the file to contain people, families, events, and places. Witnes
 | Scientific computing | scipy |
 | Report templating | Jinja2, pdfkit |
 | AI / RAG | scikit-learn (TF-IDF), pypdf, rank-bm25, requests |
+| Gramps Web API client | requests (JWT auth, paginated REST) |

@@ -413,25 +413,30 @@ def _cached_parse(content_bytes: bytes) -> GrampsDB:
     return parse_gramps(content_bytes)
 
 
-def render_sidebar():
+def render_sidebar_upload():
     st.sidebar.markdown(f"### {t('section_migration')}")
 
-    shared_bytes = st.session_state.get("shared_gramps_bytes")
-    shared_name = st.session_state.get("shared_gramps_name", "")
-
-    if shared_bytes:
-        st.sidebar.success(f"📂 {shared_name}")
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
     else:
-        uploaded = st.sidebar.file_uploader(
-            t("sidebar_gramps_uploader"),
-            type=["gramps"],
-            key="mig_uploader",
-        )
-        if uploaded:
-            content = uploaded.read()
-            st.session_state["shared_gramps_bytes"] = content
-            st.session_state["shared_gramps_name"] = uploaded.name
+        shared_bytes = st.session_state.get("shared_gramps_bytes")
+        shared_name = st.session_state.get("shared_gramps_name", "")
 
+        if shared_bytes:
+            st.sidebar.success(f"📂 {shared_name}")
+        else:
+            uploaded = st.sidebar.file_uploader(
+                t("sidebar_gramps_uploader"),
+                type=["gramps"],
+                key="mig_uploader",
+            )
+            if uploaded:
+                content = uploaded.read()
+                st.session_state["shared_gramps_bytes"] = content
+                st.session_state["shared_gramps_name"] = uploaded.name
+
+
+def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.slider(t("mig_period_years"), min_value=10, max_value=100, value=25,
                       step=5, key="mig_period_yrs")
@@ -439,12 +444,13 @@ def render_sidebar():
 
 
 def render_page():
-    content_bytes = st.session_state.get("shared_gramps_bytes")
-    if not content_bytes:
-        st.info(t("sidebar_gramps_uploader"))
-        return
-
-    db = _cached_parse(content_bytes)
+    db = st.session_state.get("_gramps_web_db_override")
+    if db is None:
+        content_bytes = st.session_state.get("shared_gramps_bytes")
+        if not content_bytes:
+            st.info(t("sidebar_gramps_uploader"))
+            return
+        db = _cached_parse(content_bytes)
     period_yrs = st.session_state.get("mig_period_yrs", 25)
     show_lines = st.session_state.get("mig_show_lines", True)
 

@@ -884,13 +884,19 @@ def _infer_place_from_children(lid, people_ext, families_ext):
     return most_common, True
 
 
-def page_extremos(content_bytes: bytes):
+def page_extremos(content_bytes):
     st.title(t("gen_ext_title"))
     st.caption(t("gen_ext_caption"))
 
     with st.spinner(t("gen_inc_computing")):
-        people_ext, families_ext = _cached_parse_extended(content_bytes)
-        stats, windowed_stats = _cached_stats(content_bytes)
+        if content_bytes is None:
+            people_ext   = st.session_state.get("_gen_api_people_ext", {})
+            families_ext = st.session_state.get("_gen_api_families_ext", {})
+            stats        = compute_file_statistics(people_ext, families_ext)
+            windowed_stats = compute_windowed_stats(people_ext, families_ext)
+        else:
+            people_ext, families_ext = _cached_parse_extended(content_bytes)
+            stats, windowed_stats = _cached_stats(content_bytes)
 
     leaf_ids = find_leaf_individuals(people_ext, families_ext)
 
@@ -1282,13 +1288,18 @@ def _render_issue_rows(rows_df: pd.DataFrame, dismissed: set, section_key: str):
             st.rerun()
 
 
-def page_inconsistencias(content_bytes: bytes):
+def page_inconsistencias(content_bytes):
     st.title(t("gen_inc_title"))
     st.caption(t("gen_inc_caption"))
 
     with st.spinner(t("gen_inc_computing")):
-        people_ext, families_ext = _cached_parse_extended(content_bytes)
-        stats, _ = _cached_stats(content_bytes)
+        if content_bytes is None:
+            people_ext   = st.session_state.get("_gen_api_people_ext", {})
+            families_ext = st.session_state.get("_gen_api_families_ext", {})
+            stats        = compute_file_statistics(people_ext, families_ext)
+        else:
+            people_ext, families_ext = _cached_parse_extended(content_bytes)
+            stats, _ = _cached_stats(content_bytes)
         G = build_graph(people_ext, families_ext)
         issues = detect_inconsistencies(people_ext, families_ext, stats, G)
 
@@ -1758,12 +1769,16 @@ def _render_ai_ctx_historico(
             st.markdown(cached)
 
 
-def page_contexto_historico(content_bytes: bytes):
+def page_contexto_historico(content_bytes):
     st.title(t("gen_ctx_title"))
     st.caption(t("gen_ctx_caption"))
 
     with st.spinner(t("gen_inc_computing")):
-        people_ext, families_ext = _cached_parse_extended(content_bytes)
+        if content_bytes is None:
+            people_ext   = st.session_state.get("_gen_api_people_ext", {})
+            families_ext = st.session_state.get("_gen_api_families_ext", {})
+        else:
+            people_ext, families_ext = _cached_parse_extended(content_bytes)
 
     historical_data = _load_historical_data()
     tree_places = _extract_places_from_tree(people_ext, families_ext)
@@ -2718,18 +2733,44 @@ def page_identificacion_candidatos(content_bytes):
     st.caption(t("gen_cand_caption"))
 
     # ── Cache parse (re-runs are fast; full parse only on file change) ────────
-    content_hash = hash(content_bytes if isinstance(content_bytes, bytes) else bytes(content_bytes))
-    if st.session_state.get("_cand_phash") != content_hash:
-        people_ext, families_ext = _cached_parse_extended(content_bytes)
-        _, place_coords, witness_per_ev, fam_mar_ev = _parse_cand_extra(content_bytes)
+    if content_bytes is None:
+        # Fuente: Gramps Web API — usar projecciones pre-cargadas en render_page
+        people_ext   = st.session_state.get("_gen_api_people_ext", {})
+        families_ext = st.session_state.get("_gen_api_families_ext", {})
+        place_coords = {}
+        witness_per_ev = {}
+        fam_mar_ev = {}
+        override_db = st.session_state.get("_gramps_web_db_override")
+        if override_db:
+            place_coords = {pl.name: (pl.lat, pl.lon) for pl in override_db.places.values() if pl.lat is not None}
+            # witness_per_ev y fam_mar_ev desde override_db
+            for ev_h, ev in override_db.events.items():
+                if ev.witnesses:
+                    witness_per_ev[ev_h] = [w.name for w in ev.witnesses]
+            for fam in override_db.families.values():
+                for ref in ([] if not hasattr(fam, '_event_refs') else fam._event_refs):
+                    pass
         st.session_state.update({
-            "_cand_phash": content_hash,
+            "_cand_phash": "api_override",
             "_cand_people": people_ext,
             "_cand_families": families_ext,
             "_cand_place_coords": place_coords,
             "_cand_wit_ev": witness_per_ev,
             "_cand_fam_mar": fam_mar_ev,
         })
+    else:
+        content_hash = hash(content_bytes if isinstance(content_bytes, bytes) else bytes(content_bytes))
+        if st.session_state.get("_cand_phash") != content_hash:
+            people_ext, families_ext = _cached_parse_extended(content_bytes)
+            _, place_coords, witness_per_ev, fam_mar_ev = _parse_cand_extra(content_bytes)
+            st.session_state.update({
+                "_cand_phash": content_hash,
+                "_cand_people": people_ext,
+                "_cand_families": families_ext,
+                "_cand_place_coords": place_coords,
+                "_cand_wit_ev": witness_per_ev,
+                "_cand_fam_mar": fam_mar_ev,
+            })
 
     people_ext = st.session_state["_cand_people"]
     families_ext = st.session_state["_cand_families"]
@@ -3017,27 +3058,31 @@ def page_identificacion_candidatos(content_bytes):
 # Interfaz pública
 # ============================================================
 
-def render_sidebar():
+def render_sidebar_upload():
     st.sidebar.markdown(t("gen_sidebar_header"))
 
-    shared_bytes = st.session_state.get('shared_gramps_bytes')
-    shared_name = st.session_state.get('shared_gramps_name', '')
-
-    if shared_bytes:
-        st.sidebar.success(f"📂 {shared_name}")
-        uploaded = None
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
     else:
-        uploaded = st.sidebar.file_uploader(
-            t("upload_file"),
-            type=['gramps'],
-            key='gen_uploader',
-        )
-        if uploaded:
-            content = uploaded.read()
-            st.session_state['shared_gramps_bytes'] = content
-            st.session_state['shared_gramps_name'] = uploaded.name
-            st.session_state['gen_uploaded_bytes'] = content
+        shared_bytes = st.session_state.get('shared_gramps_bytes')
+        shared_name = st.session_state.get('shared_gramps_name', '')
 
+        if shared_bytes:
+            st.sidebar.success(f"📂 {shared_name}")
+        else:
+            uploaded = st.sidebar.file_uploader(
+                t("upload_file"),
+                type=['gramps'],
+                key='gen_uploader',
+            )
+            if uploaded:
+                content = uploaded.read()
+                st.session_state['shared_gramps_bytes'] = content
+                st.session_state['shared_gramps_name'] = uploaded.name
+                st.session_state['gen_uploaded_bytes'] = content
+
+
+def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.radio(
         t("gen_subpage_selector"),
@@ -3054,13 +3099,25 @@ def render_sidebar():
 
 
 def render_page():
-    content_bytes = (
-        st.session_state.get('gen_uploaded_bytes')
-        or st.session_state.get('shared_gramps_bytes')
-    )
-    if not content_bytes:
-        st.info(t("gen_ext_no_file"))
-        return
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if override_db is not None:
+        # Precomputar projecciones del DB de la API y almacenarlas para que las
+        # subfunciones las encuentren cuando llamen a _cached_parse_extended
+        people_ext  = override_db.to_persons_ext()
+        families_ext = override_db.to_families_ext()
+        st.session_state["_gen_api_people_ext"]   = people_ext
+        st.session_state["_gen_api_families_ext"] = families_ext
+        content_bytes = None
+    else:
+        content_bytes = (
+            st.session_state.get('gen_uploaded_bytes')
+            or st.session_state.get('shared_gramps_bytes')
+        )
+        st.session_state.pop("_gen_api_people_ext", None)
+        st.session_state.pop("_gen_api_families_ext", None)
+        if not content_bytes:
+            st.info(t("gen_ext_no_file"))
+            return
 
     active = st.session_state.get('gen_active_subpage_label', '')
     if active == t("gen_subpage_inconsistencias"):

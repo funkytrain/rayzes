@@ -405,24 +405,29 @@ def _update_task(tasks: list[dict], task_id: str, **kwargs) -> None:
 # Render público
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_sidebar() -> None:
+def render_sidebar_upload() -> None:
     st.sidebar.markdown(t("sidebar_gramps_header"))
-    shared_bytes = st.session_state.get("shared_gramps_bytes")
-    shared_name  = st.session_state.get("shared_gramps_name", "")
-
-    if shared_bytes:
-        st.sidebar.success(f"📂 {shared_name}")
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
     else:
-        uploaded = st.sidebar.file_uploader(
-            t("sidebar_gramps_uploader"),
-            type=["gramps"],
-            key="inv_uploader",
-        )
-        if uploaded:
-            content = uploaded.read()
-            st.session_state["shared_gramps_bytes"] = content
-            st.session_state["shared_gramps_name"]  = uploaded.name
+        shared_bytes = st.session_state.get("shared_gramps_bytes")
+        shared_name  = st.session_state.get("shared_gramps_name", "")
 
+        if shared_bytes:
+            st.sidebar.success(f"📂 {shared_name}")
+        else:
+            uploaded = st.sidebar.file_uploader(
+                t("sidebar_gramps_uploader"),
+                type=["gramps"],
+                key="inv_uploader",
+            )
+            if uploaded:
+                content = uploaded.read()
+                st.session_state["shared_gramps_bytes"] = content
+                st.session_state["shared_gramps_name"]  = uploaded.name
+
+
+def render_sidebar() -> None:
     st.sidebar.markdown("---")
     st.sidebar.selectbox(
         t("inv_filter_status"),

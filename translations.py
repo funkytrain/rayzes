@@ -1552,6 +1552,22 @@ TRANSLATIONS = {
         "sidebar_llm_header": "**Configuración LLM**",
         "sidebar_llm_url": "URL del servidor LLM",
         "sidebar_llm_model": "Modelo",
+
+        # ── Gramps Web API ────────────────────────────────────────────────────
+        "gramps_web_expander_label": "🌐 Gramps Web API",
+        "gramps_web_url_label": "URL del servidor",
+        "gramps_web_user_label": "Usuario",
+        "gramps_web_pwd_label": "Contraseña",
+        "gramps_web_connect_btn": "Conectar",
+        "gramps_web_disconnect_btn": "Desconectar",
+        "gramps_web_connecting": "Conectando...",
+        "gramps_web_connected_ok": "✅ Conectado",
+        "gramps_web_auth_error": "Error de autenticación: {e}",
+        "gramps_web_conn_error": "No se puede conectar al servidor",
+        "gramps_web_fill_all": "Completa todos los campos",
+        "gramps_web_status_connected": "🟢 API: {url}",
+        "gramps_web_source_active": "Datos: Gramps Web API",
+        "gramps_web_fetch_error": "Error al obtener datos de la API",
     },
 
     "en": {
@@ -3075,5 +3091,21 @@ TRANSLATIONS = {
         "sidebar_llm_header": "**LLM Configuration**",
         "sidebar_llm_url": "LLM server URL",
         "sidebar_llm_model": "Model",
+
+        # ── Gramps Web API ────────────────────────────────────────────────────
+        "gramps_web_expander_label": "🌐 Gramps Web API",
+        "gramps_web_url_label": "Server URL",
+        "gramps_web_user_label": "Username",
+        "gramps_web_pwd_label": "Password",
+        "gramps_web_connect_btn": "Connect",
+        "gramps_web_disconnect_btn": "Disconnect",
+        "gramps_web_connecting": "Connecting...",
+        "gramps_web_connected_ok": "✅ Connected",
+        "gramps_web_auth_error": "Authentication error: {e}",
+        "gramps_web_conn_error": "Cannot connect to server",
+        "gramps_web_fill_all": "Fill all fields",
+        "gramps_web_status_connected": "🟢 API: {url}",
+        "gramps_web_source_active": "Data: Gramps Web API",
+        "gramps_web_fetch_error": "Error fetching data from API",
     },
 }

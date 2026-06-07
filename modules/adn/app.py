@@ -733,22 +733,27 @@ def _render_lineage(G, max_gen: int):
 # Puntos de entrada del módulo
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_sidebar():
+def render_sidebar_upload():
     st.sidebar.markdown(t("adn_sidebar_header"))
 
-    # Hereda archivo compartido si otro módulo ya lo cargó
-    if st.session_state.get("shared_gramps_bytes") and "adn_uploaded_bytes" not in st.session_state:
-        st.session_state["adn_uploaded_bytes"] = st.session_state["shared_gramps_bytes"]
-        name = st.session_state.get("shared_gramps_name", "")
-        st.sidebar.info(f"{t('adn_using_shared_file')}: **{name}**")
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
+    else:
+        # Hereda archivo compartido si otro módulo ya lo cargó
+        if st.session_state.get("shared_gramps_bytes") and "adn_uploaded_bytes" not in st.session_state:
+            st.session_state["adn_uploaded_bytes"] = st.session_state["shared_gramps_bytes"]
+            name = st.session_state.get("shared_gramps_name", "")
+            st.sidebar.info(f"{t('adn_using_shared_file')}: **{name}**")
 
-    uploaded = st.sidebar.file_uploader(t("adn_upload_label"), type=["gramps", "xml"])
-    if uploaded is not None:
-        data = uploaded.read()
-        st.session_state["adn_uploaded_bytes"] = data
-        st.session_state["shared_gramps_bytes"] = data
-        st.session_state["shared_gramps_name"] = uploaded.name
+        uploaded = st.sidebar.file_uploader(t("adn_upload_label"), type=["gramps", "xml"])
+        if uploaded is not None:
+            data = uploaded.read()
+            st.session_state["adn_uploaded_bytes"] = data
+            st.session_state["shared_gramps_bytes"] = data
+            st.session_state["shared_gramps_name"] = uploaded.name
 
+
+def render_sidebar():
     st.sidebar.slider(
         t("adn_max_gen"),
         min_value=3, max_value=20, value=12, step=1,
@@ -759,18 +764,22 @@ def render_sidebar():
 def render_page():
     st.title(t("adn_title"))
 
-    content = st.session_state.get("adn_uploaded_bytes")
-    if content is None:
-        st.info(t("adn_upload_warning"))
-        return
-
     max_gen = st.session_state.get("adn_max_gen", 12)
 
-    try:
-        people, families = _cached_parse_gramps(content)
-    except Exception as e:
-        st.error(str(e))
-        return
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if override_db is not None:
+        people   = override_db.to_persons_dict()
+        families = override_db.to_families_dict()
+    else:
+        content = st.session_state.get("adn_uploaded_bytes")
+        if content is None:
+            st.info(t("adn_upload_warning"))
+            return
+        try:
+            people, families = _cached_parse_gramps(content)
+        except Exception as e:
+            st.error(str(e))
+            return
 
     if not people:
         st.error(t("adn_no_people"))

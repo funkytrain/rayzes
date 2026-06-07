@@ -213,14 +213,18 @@ def load_csv(path):
 
 def load_data_from_xml_or_csv():
     """
-    Carga datos desde el archivo GRAMPS subido por el usuario.
+    Carga datos desde el archivo GRAMPS subido por el usuario o desde la API.
     Retorna: df, df_places
     """
-    xml_path = st.session_state.get('tst_gramps_xml_path')
-    if not xml_path or not Path(xml_path).exists():
-        return pd.DataFrame(), pd.DataFrame()
-
-    events_data, persons_map, places_map = parse_gramps_xml_full(xml_path)
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if override_db is not None:
+        events_data = override_db.to_witness_events()
+        places_map  = override_db.to_places_map()
+    else:
+        xml_path = st.session_state.get('tst_gramps_xml_path')
+        if not xml_path or not Path(xml_path).exists():
+            return pd.DataFrame(), pd.DataFrame()
+        events_data, _, places_map = parse_gramps_xml_full(xml_path)
 
     if not events_data:
         st.warning(t("data_no_extraer_xml"))
@@ -956,39 +960,45 @@ def calculate_network_metrics_over_time(df_in, period='decade'):
 # ---------------- UI Pages ----------------
 
 # Ensure session storage for confirmations
-def render_sidebar():
-    """Controles de sidebar de Testigos: uploader GRAMPS + radio de sub-páginas."""
+def render_sidebar_upload():
+    """Uploader GRAMPS para Testigos (parte superior del sidebar)."""
     st.sidebar.markdown(t("sidebar_gramps_header"))
 
-    shared_bytes = st.session_state.get('shared_gramps_bytes')
-    shared_name = st.session_state.get('shared_gramps_name', '')
-
-    if shared_bytes and 'tst_gramps_xml_path' not in st.session_state:
-        temp_path = BASE_DIR / f"temp_{shared_name}"
-        with open(temp_path, 'wb') as f:
-            f.write(shared_bytes)
-        st.session_state['tst_gramps_xml_path'] = str(temp_path)
-
-    if shared_bytes:
-        st.sidebar.success(t("sidebar_gramps_loaded", name=shared_name))
-        if st.sidebar.button(t("sidebar_gramps_reload")):
-            st.cache_data.clear()
-            st.rerun()
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
     else:
-        uploaded_file = st.sidebar.file_uploader(t("sidebar_gramps_uploader"), type=['gramps', 'xml'])
-        if uploaded_file is not None:
-            file_bytes = uploaded_file.getbuffer().tobytes()
-            temp_path = BASE_DIR / f"temp_{uploaded_file.name}"
+        shared_bytes = st.session_state.get('shared_gramps_bytes')
+        shared_name = st.session_state.get('shared_gramps_name', '')
+
+        if shared_bytes and 'tst_gramps_xml_path' not in st.session_state:
+            temp_path = BASE_DIR / f"temp_{shared_name}"
             with open(temp_path, 'wb') as f:
-                f.write(file_bytes)
+                f.write(shared_bytes)
             st.session_state['tst_gramps_xml_path'] = str(temp_path)
-            st.session_state['shared_gramps_bytes'] = file_bytes
-            st.session_state['shared_gramps_name'] = uploaded_file.name
-            st.sidebar.success(t("sidebar_gramps_loaded", name=uploaded_file.name))
+
+        if shared_bytes:
+            st.sidebar.success(t("sidebar_gramps_loaded", name=shared_name))
             if st.sidebar.button(t("sidebar_gramps_reload")):
                 st.cache_data.clear()
                 st.rerun()
+        else:
+            uploaded_file = st.sidebar.file_uploader(t("sidebar_gramps_uploader"), type=['gramps', 'xml'])
+            if uploaded_file is not None:
+                file_bytes = uploaded_file.getbuffer().tobytes()
+                temp_path = BASE_DIR / f"temp_{uploaded_file.name}"
+                with open(temp_path, 'wb') as f:
+                    f.write(file_bytes)
+                st.session_state['tst_gramps_xml_path'] = str(temp_path)
+                st.session_state['shared_gramps_bytes'] = file_bytes
+                st.session_state['shared_gramps_name'] = uploaded_file.name
+                st.sidebar.success(t("sidebar_gramps_loaded", name=uploaded_file.name))
+                if st.sidebar.button(t("sidebar_gramps_reload")):
+                    st.cache_data.clear()
+                    st.rerun()
 
+
+def render_sidebar():
+    """Controles de subsección de Testigos (radio de páginas)."""
     st.sidebar.markdown("---")
     st.sidebar.markdown(t("sidebar_sections"))
     _menu_options = [
@@ -6285,6 +6295,15 @@ def _get_gramps_index_rich(gramps_path_val):
     return gi
 
 
+def _get_gramps_index_from_override():
+    """Obtiene el índice GRAMPS directamente del DB del override de la API."""
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if override_db is None:
+        return {}
+    gi, _ = override_db.to_gramps_index()
+    return gi
+
+
 def _is_plausible_gramps_match(events: list, candidate: dict,
                                 max_geo_km: float = 200.0,
                                 gramps_idx: dict = None) -> bool:
@@ -6375,7 +6394,10 @@ def _cached_candidates(name_thr_val, max_dist_val, gramps_path_val, by_witness_k
     cached = st.session_state.get(cache_key)
     if cached is not None:
         return cached
-    gi = _get_gramps_index_rich(gramps_path_val)
+    if st.session_state.get("_gramps_web_db_override") is not None:
+        gi = _get_gramps_index_from_override()
+    else:
+        gi = _get_gramps_index_rich(gramps_path_val)
     result = find_gramps_candidates(by_witness, gi, places_index,
                                     name_threshold=name_thr_val,
                                     max_dist_km=max_dist_val)
@@ -7618,9 +7640,10 @@ def page_identity_resolution():
     st.title(t("ir_title"))
     st.caption(t("ir_description"))
 
-    # ── Verificar archivo GRAMPS ──────────────────────────────────────────────
+    # ── Verificar fuente de datos GRAMPS ─────────────────────────────────────
+    _ir_override_db = st.session_state.get("_gramps_web_db_override")
     content_bytes = st.session_state.get("shared_gramps_bytes")
-    if not content_bytes:
+    if not content_bytes and _ir_override_db is None:
         st.info(t("ir_no_file"))
         return
 
@@ -7641,7 +7664,10 @@ def page_identity_resolution():
     if run_clicked:
         with st.spinner(t("ir_running")):
             try:
-                db = _parse_gramps_shared(content_bytes)
+                if _ir_override_db is not None:
+                    db = _ir_override_db
+                else:
+                    db = _parse_gramps_shared(content_bytes)
             except Exception as e:
                 st.error(f"Error al parsear GRAMPS: {e}")
                 return

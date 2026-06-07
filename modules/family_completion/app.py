@@ -723,25 +723,30 @@ def _render_result_detail(case: dict, db: GrampsDB, people_ext: dict,
 # Sidebar
 # ============================================================
 
-def render_sidebar():
+def render_sidebar_upload():
     st.sidebar.markdown(f"### {t('section_family_completion')}")
 
-    shared_bytes = st.session_state.get("shared_gramps_bytes")
-    shared_name = st.session_state.get("shared_gramps_name", "")
-
-    if shared_bytes:
-        st.sidebar.success(f"📂 {shared_name}")
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
     else:
-        uploaded = st.sidebar.file_uploader(
-            t("sidebar_gramps_uploader"),
-            type=["gramps"],
-            key="fce_uploader",
-        )
-        if uploaded:
-            content = uploaded.read()
-            st.session_state["shared_gramps_bytes"] = content
-            st.session_state["shared_gramps_name"] = uploaded.name
+        shared_bytes = st.session_state.get("shared_gramps_bytes")
+        shared_name = st.session_state.get("shared_gramps_name", "")
 
+        if shared_bytes:
+            st.sidebar.success(f"📂 {shared_name}")
+        else:
+            uploaded = st.sidebar.file_uploader(
+                t("sidebar_gramps_uploader"),
+                type=["gramps"],
+                key="fce_uploader",
+            )
+            if uploaded:
+                content = uploaded.read()
+                st.session_state["shared_gramps_bytes"] = content
+                st.session_state["shared_gramps_name"] = uploaded.name
+
+
+def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.radio(
         t("fce_subpage_selector"),
@@ -775,10 +780,16 @@ def render_sidebar():
 # ============================================================
 
 def render_page():
-    content_bytes = st.session_state.get("shared_gramps_bytes")
-    if not content_bytes:
-        st.info(t("sidebar_gramps_uploader"))
-        return
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if override_db is not None:
+        content_bytes = None
+        db = override_db
+    else:
+        content_bytes = st.session_state.get("shared_gramps_bytes")
+        if not content_bytes:
+            st.info(t("sidebar_gramps_uploader"))
+            return
+        db = None
 
     active_subpage = st.session_state.get("fce_active_subpage", t("fce_subpage_engine"))
     if active_subpage == t("gen_subpage_candidatos"):
@@ -788,13 +799,27 @@ def render_page():
     st.title(t("section_family_completion"))
     st.caption(t("fce_page_caption"))
 
-    db = _cached_parse(content_bytes)
+    if db is None:
+        db = _cached_parse(content_bytes)
     people_ext = db.to_persons_ext()
     families_ext = db.to_families_ext()
     place_coords = _build_place_coords(db)
 
-    # Parseo de testigos de matrimonio (misma lógica que general/page_identificacion_candidatos)
-    _, _, witness_per_ev, fam_mar_ev = _cached_cand_extra(content_bytes)
+    # Testigos de matrimonio y eventos de matrimonio por familia
+    if content_bytes is not None:
+        _, _, witness_per_ev, fam_mar_ev = _cached_cand_extra(content_bytes)
+    else:
+        witness_per_ev = {ev_h: [w.name for w in ev.witnesses]
+                         for ev_h, ev in override_db.events.items() if ev.witnesses}
+        fam_mar_ev = {}
+        for fam in override_db.families.values():
+            for ref in (override_db.families[fam.handle].child_handles if False else []):
+                pass
+        # fam_mar_ev: {fam_id → marriage_event_handle} — derivado de events por tipo matrimonio
+        _MARRIAGE_T = {"marriage", "matrimonio", "casamiento", "married"}
+        for ev_h, ev in override_db.events.items():
+            if ev.type.lower() in _MARRIAGE_T and ev.subject_handle:
+                pass  # subject_handle es persona, no familia; fam_mar_ev queda vacío para API
 
     config = {
         "fuzzy_thr":     80,

@@ -89,19 +89,26 @@ def _load_all_inconsistencies(content_bytes: bytes) -> list[dict]:
 # render_sidebar
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_sidebar() -> None:
+def render_sidebar_upload() -> None:
     st.sidebar.markdown(t("sidebar_gramps_header"))
-    uploaded = st.sidebar.file_uploader(
-        t("sidebar_gramps_uploader"),
-        type=["gramps"],
-        key="exp_uploader",
-    )
-    if uploaded is not None:
-        st.session_state["shared_gramps_bytes"] = uploaded.read()
-        st.session_state["shared_gramps_name"] = uploaded.name
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
+    else:
+        uploaded = st.sidebar.file_uploader(
+            t("sidebar_gramps_uploader"),
+            type=["gramps"],
+            key="exp_uploader",
+        )
+        if uploaded is not None:
+            st.session_state["shared_gramps_bytes"] = uploaded.read()
+            st.session_state["shared_gramps_name"] = uploaded.name
 
-    if st.session_state.get("shared_gramps_name"):
-        st.sidebar.success(t("sidebar_gramps_loaded", name=st.session_state["shared_gramps_name"]))
+        if st.session_state.get("shared_gramps_name"):
+            st.sidebar.success(t("sidebar_gramps_loaded", name=st.session_state["shared_gramps_name"]))
+
+
+def render_sidebar() -> None:
+    pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,12 +118,13 @@ def render_sidebar() -> None:
 def render_page() -> None:
     st.title(t("exp_title"))
 
-    content_bytes: bytes | None = st.session_state.get("shared_gramps_bytes")
-    if not content_bytes:
-        st.info(t("exp_no_file"))
-        return
-
-    db = _cached_parse(content_bytes)
+    db = st.session_state.get("_gramps_web_db_override")
+    if db is None:
+        content_bytes: bytes | None = st.session_state.get("shared_gramps_bytes")
+        if not content_bytes:
+            st.info(t("exp_no_file"))
+            return
+        db = _cached_parse(content_bytes)
 
     # ── Opciones ──────────────────────────────────────────────────────────────
     st.markdown(f"### {t('exp_options_header')}")

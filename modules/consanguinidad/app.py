@@ -1030,30 +1030,60 @@ def render_pyvis_colormap_by_F(G, df_analysis, center_id=None, gens=4):
     """)
     return net.generate_html()
 
-def render_sidebar():
-    """Controles de sidebar de Consanguinidad: uploader + parámetros + botón de análisis."""
+def render_sidebar_upload():
+    """Uploader GRAMPS para Consanguinidad (parte superior del sidebar)."""
     if "cng_analysis_done" not in st.session_state:
         st.session_state["cng_analysis_done"] = False
 
     st.sidebar.header(t("upload_params"))
-    # Mostrar nombre del archivo ya cargado (desde Testigos u otra sección)
-    shared_name = st.session_state.get("shared_gramps_name")
-    if shared_name and "cng_uploaded_bytes" not in st.session_state:
-        st.sidebar.info(f"Usando archivo ya cargado: **{shared_name}**")
-    uploaded = st.sidebar.file_uploader(t("upload_file"), type=["gramps", "xml"])
-    if uploaded is not None:
-        file_bytes = uploaded.read()
-        st.session_state["cng_uploaded_bytes"] = file_bytes
-        # Compartir con otros módulos
-        st.session_state["shared_gramps_bytes"] = file_bytes
-        st.session_state["shared_gramps_name"] = uploaded.name
-    elif "cng_uploaded_bytes" not in st.session_state and st.session_state.get("shared_gramps_bytes"):
-        st.session_state["cng_uploaded_bytes"] = st.session_state["shared_gramps_bytes"]
+    if st.session_state.get("gramps_web_connected"):
+        st.sidebar.info(t("gramps_web_source_active"))
+    else:
+        # Mostrar nombre del archivo ya cargado (desde Testigos u otra sección)
+        shared_name = st.session_state.get("shared_gramps_name")
+        if shared_name and "cng_uploaded_bytes" not in st.session_state:
+            st.sidebar.info(f"Usando archivo ya cargado: **{shared_name}**")
+        uploaded = st.sidebar.file_uploader(t("upload_file"), type=["gramps", "xml"])
+        if uploaded is not None:
+            file_bytes = uploaded.read()
+            st.session_state["cng_uploaded_bytes"] = file_bytes
+            # Compartir con otros módulos
+            st.session_state["shared_gramps_bytes"] = file_bytes
+            st.session_state["shared_gramps_name"] = uploaded.name
+        elif "cng_uploaded_bytes" not in st.session_state and st.session_state.get("shared_gramps_bytes"):
+            st.session_state["cng_uploaded_bytes"] = st.session_state["shared_gramps_bytes"]
+
+
+def render_sidebar():
+    """Parámetros de análisis de Consanguinidad."""
     st.sidebar.slider(t("max_gen"), min_value=3, max_value=12, value=8, step=1, key="cng_max_gen")
     st.sidebar.number_input(t("f_threshold"), min_value=0.0, max_value=1.0,
                             value=0.0, step=0.0001, format="%.6f", key="cng_f_threshold")
     if st.sidebar.button(t("run_analysis"), key="cng_run_analysis"):
         st.session_state["cng_analysis_done"] = True
+
+
+def _run_inbreeding(people: dict, families: dict, max_gen: int):
+    """Calcula consanguinidad desde dicts people/families ya parseados (sin bytes)."""
+    if not people:
+        return [], {}, {}
+    G = build_graph(people, families)
+    cache: dict = {}
+    results = []
+    for pid in G.nodes():
+        Fval = compute_inbreeding(G, pid, cache, max_gen=max_gen)
+        loops = find_consanguinity_for_person(G, pid, max_gen=max_gen)
+        results.append({
+            "id": pid,
+            "name": G.nodes[pid].get("name", pid),
+            "F": Fval,
+            "n_common_ancestors": len(loops),
+            "common_ancestors": "; ".join(
+                [f"{l['ancestor_name']} ({l['ancestor']})" for l in loops]
+            ),
+            "loops_details": loops,
+        })
+    return results, cache, families
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -1093,15 +1123,22 @@ def render_page():
     if not st.session_state.get("cng_analysis_done", False):
         st.info(t("adjust_params"))
         return
-    content = st.session_state.get("cng_uploaded_bytes")
-    if content is None:
-        st.warning(t("upload_warning"))
-        return
     max_gen = st.session_state.get("cng_max_gen", 8)
     f_threshold = st.session_state.get("cng_f_threshold", 0.0)
 
-    with st.spinner("Analizando..."):
-        results, cache, families = _cached_inbreeding_results(content, max_gen)
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if override_db is not None:
+        people  = override_db.to_persons_dict()
+        families_dict = override_db.to_families_dict()
+        with st.spinner("Analizando..."):
+            results, cache, families = _run_inbreeding(people, families_dict, max_gen)
+    else:
+        content = st.session_state.get("cng_uploaded_bytes")
+        if content is None:
+            st.warning(t("upload_warning"))
+            return
+        with st.spinner("Analizando..."):
+            results, cache, families = _cached_inbreeding_results(content, max_gen)
 
     if not results:
         st.error(t("no_people"))
