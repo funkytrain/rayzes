@@ -1440,6 +1440,11 @@ TRANSLATIONS = {
         # ── RAG Asistente Genealógico ─────────────────────────────────────────
         "section_rag_assistant": "Asistente IA",
         "rag_sidebar_header": "### 🤖 Asistente RAG",
+        "rag_sidebar_provider": "Proveedor LLM",
+        "rag_provider_local": "Local (llama-swap / Ollama)",
+        "rag_provider_claude": "Claude API (Anthropic)",
+        "rag_provider_openai": "OpenAI API",
+        "rag_sidebar_api_key": "API Key",
         "rag_sidebar_llm_url": "URL del servidor LLM",
         "rag_sidebar_model": "Modelo",
         "rag_sidebar_topk": "Fragmentos a recuperar (Top-K)",
@@ -2449,6 +2454,11 @@ TRANSLATIONS = {
         # ── RAG Genealogy Assistant ───────────────────────────────────────────
         "section_rag_assistant": "AI Assistant",
         "rag_sidebar_header": "### 🤖 RAG Assistant",
+        "rag_sidebar_provider": "LLM Provider",
+        "rag_provider_local": "Local (llama-swap / Ollama)",
+        "rag_provider_claude": "Claude API (Anthropic)",
+        "rag_provider_openai": "OpenAI API",
+        "rag_sidebar_api_key": "API Key",
         "rag_sidebar_llm_url": "LLM server URL",
         "rag_sidebar_model": "Model",
         "rag_sidebar_topk": "Chunks to retrieve (Top-K)",

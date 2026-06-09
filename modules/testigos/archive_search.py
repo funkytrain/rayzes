@@ -404,6 +404,8 @@ def search_archive_for_witness(
     base_url: str,
     model: str,
     llm_timeout: int = 120,
+    provider: str = "local",
+    api_key: str | None = None,
 ) -> WitnessArchiveResult:
     """
     Ejecuta el pipeline completo de búsqueda para un testigo:
@@ -426,6 +428,8 @@ def search_archive_for_witness(
             max_tokens=600,
             temperature=0.2,
             timeout=llm_timeout,
+            provider=provider,
+            api_key=api_key,
         )
         query_data = parse_llm_json(query_response)
         queries = query_data.get("queries", [])
@@ -523,6 +527,8 @@ def search_archive_for_witness(
                 max_tokens=800,
                 temperature=0.1,
                 timeout=llm_timeout,
+                provider=provider,
+                api_key=api_key,
             )
             eval_data = parse_llm_json(eval_response)
             evaluaciones = eval_data.get("evaluaciones", [])

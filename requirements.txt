@@ -44,3 +44,6 @@ pdfkit>=1.0  # Requiere wkhtmltopdf instalado a nivel de SO (ver README)
 # --- RAG ASSISTANT ---
 pypdf>=4.0
 rank-bm25>=0.2.2
+
+# --- LLM REMOTE PROVIDERS ---
+anthropic>=0.40.0

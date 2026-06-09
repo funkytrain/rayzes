@@ -527,6 +527,8 @@ def _render_archive_tab() -> None:
     base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
     model = st.session_state.get("rag_llm_model", "qwen3-14b")
     llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+    llm_provider = st.session_state.get("rag_llm_provider", "local")
+    llm_api_key = st.session_state.get("rag_llm_api_key") or None
 
     # Obtener testigos importantes
     min_events = st.number_input(t("arch_min_events"), min_value=1, max_value=50, value=1, step=1)
@@ -620,7 +622,8 @@ def _render_archive_tab() -> None:
                 continue
             try:
                 result = search_archive_for_witness(
-                    candidate, base_url=base_url, model=model, llm_timeout=llm_timeout
+                    candidate, base_url=base_url, model=model, llm_timeout=llm_timeout,
+                    provider=llm_provider, api_key=llm_api_key,
                 )
                 put_result(store, result)
             except Exception as e:
@@ -680,7 +683,8 @@ def _render_archive_tab() -> None:
             if search_clicked:
                 with st.spinner(t("archive_searching")):
                     result = search_archive_for_witness(
-                        candidate, base_url=base_url, model=model, llm_timeout=llm_timeout
+                        candidate, base_url=base_url, model=model, llm_timeout=llm_timeout,
+                        provider=llm_provider, api_key=llm_api_key,
                     )
                 put_result(store, result)
                 save_store(store)

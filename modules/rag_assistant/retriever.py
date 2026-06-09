@@ -46,13 +46,23 @@ def query_tfidf(
 # Embeddings index (optional — requires /v1/embeddings endpoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _embed_batch(texts: list[str], base_url: str, model: str, timeout: int = 60) -> Optional[np.ndarray]:
+def _embed_batch(
+    texts: list[str],
+    base_url: str,
+    model: str,
+    timeout: int = 60,
+    api_key: str | None = None,
+) -> Optional[np.ndarray]:
     import requests
     url = base_url.rstrip("/") + "/embeddings"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
         resp = requests.post(
             url,
             json={"model": model, "input": texts},
+            headers=headers,
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -68,13 +78,23 @@ def try_build_embeddings_index(
     base_url: str,
     model: str,
     batch_size: int = 32,
+    provider: str = "local",
+    api_key: str | None = None,
 ) -> Optional[np.ndarray]:
+    # Claude API has no embeddings endpoint — skip and use TF-IDF
+    if provider == "claude":
+        return None
+
+    effective_base_url = base_url
+    if provider == "openai_remote":
+        effective_base_url = "https://api.openai.com/v1"
+
     all_vecs: list[np.ndarray] = []
     texts = [c.text for c in chunks]
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i: i + batch_size]
-        vecs = _embed_batch(batch, base_url, model)
+        vecs = _embed_batch(batch, effective_base_url, model, api_key=api_key)
         if vecs is None:
             return None
         all_vecs.append(vecs)
@@ -98,8 +118,13 @@ def query_embeddings(
     base_url: str,
     model: str,
     top_k: int = 5,
+    provider: str = "local",
+    api_key: str | None = None,
 ) -> list[tuple[RagChunk, float]]:
-    qvec = _embed_batch([query], base_url, model)
+    effective_base_url = base_url
+    if provider == "openai_remote":
+        effective_base_url = "https://api.openai.com/v1"
+    qvec = _embed_batch([query], effective_base_url, model, api_key=api_key)
     if qvec is None:
         return []
     scores = _cosine_scores(qvec[0], embeddings)
@@ -118,12 +143,17 @@ def build_index(
     gramps_hash: str,
     doc_filenames: list[str],
     db=None,
+    provider: str = "local",
+    api_key: str | None = None,
 ) -> RagIndex:
     embeddings: Optional[np.ndarray] = None
     strategy = "tfidf"
 
     try:
-        embeddings = try_build_embeddings_index(chunks, base_url, model, batch_size=32)
+        embeddings = try_build_embeddings_index(
+            chunks, base_url, model, batch_size=32,
+            provider=provider, api_key=api_key,
+        )
         if embeddings is not None:
             strategy = "embeddings"
     except Exception:
@@ -171,9 +201,14 @@ def retrieve(
     top_k: int = 5,
     base_url: str = "http://127.0.0.1:9292/v1",
     model: str = "qwen3",
+    provider: str = "local",
+    api_key: str | None = None,
 ) -> list[tuple[RagChunk, float]]:
     if index.strategy == "embeddings" and index.embeddings is not None:
-        results = query_embeddings(query, index.embeddings, index.chunks, base_url, model, top_k=top_k)
+        results = query_embeddings(
+            query, index.embeddings, index.chunks, base_url, model,
+            top_k=top_k, provider=provider, api_key=api_key,
+        )
         if results:
             return results
         # fallback to tfidf if embedding query fails

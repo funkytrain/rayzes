@@ -63,6 +63,8 @@ def _ensure_index(content_bytes: bytes, doc_uploads) -> None:
     # Rebuild
     base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
     model = st.session_state.get("rag_llm_model", "qwen3-14b")
+    provider = st.session_state.get("rag_llm_provider", "local")
+    api_key = st.session_state.get("rag_llm_api_key") or None
 
     with st.spinner(t("rag_index_building")):
         db = parse_gramps(content_bytes)
@@ -84,6 +86,8 @@ def _ensure_index(content_bytes: bytes, doc_uploads) -> None:
             gramps_hash=current_hash,
             doc_filenames=current_doc_names,
             db=db,
+            provider=provider,
+            api_key=api_key,
         )
         save_index(index)
 
@@ -174,9 +178,12 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
     base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
     model = st.session_state.get("rag_llm_model", "qwen3-14b")
     llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+    provider = st.session_state.get("rag_llm_provider", "local")
+    api_key = st.session_state.get("rag_llm_api_key") or None
     max_answer = min(max_tokens // 2, 2000)
 
-    retrieved = retrieve(question, index, top_k=top_k, base_url=base_url, model=model)
+    retrieved = retrieve(question, index, top_k=top_k, base_url=base_url, model=model,
+                         provider=provider, api_key=api_key)
     if not retrieved:
         return t("rag_no_context"), []
 
@@ -199,7 +206,8 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
     try:
         for round_n in range(_MAX_TOOL_ROUNDS + 1):
             try:
-                response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer, timeout=llm_timeout)
+                response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer,
+                                           timeout=llm_timeout, provider=provider, api_key=api_key)
             except RuntimeError as e:
                 err = str(e)
                 is_overflow = ("exceed_context_size" in err or "context_length_exceeded" in err
@@ -212,7 +220,8 @@ def _answer_question(question: str, index, history: list[dict]) -> tuple[str, li
                         max_context_tokens=safe_context // 2,
                         tree_stats=index.tree_stats,
                     )
-                    response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer, timeout=llm_timeout)
+                    response = chat_completion(messages, base_url=base_url, model=model, max_tokens=max_answer,
+                                               timeout=llm_timeout, provider=provider, api_key=api_key)
                 else:
                     raise
 
@@ -277,18 +286,70 @@ def answer_oneshot(
 # Streamlit render functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+_CLAUDE_MODELS = ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
+_PROVIDER_OPTIONS = ["local", "claude", "openai_remote"]
+
+
 def render_llm_config_sidebar() -> None:
     st.sidebar.markdown(t("rag_sidebar_header"))
-    st.sidebar.text_input(
-        t("rag_sidebar_llm_url"),
-        value=st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1"),
-        key="rag_llm_base_url",
+
+    provider_labels = {
+        "local": t("rag_provider_local"),
+        "claude": t("rag_provider_claude"),
+        "openai_remote": t("rag_provider_openai"),
+    }
+    current_provider = st.session_state.get("rag_llm_provider", "local")
+    if current_provider not in _PROVIDER_OPTIONS:
+        current_provider = "local"
+
+    provider = st.sidebar.selectbox(
+        t("rag_sidebar_provider"),
+        options=_PROVIDER_OPTIONS,
+        index=_PROVIDER_OPTIONS.index(current_provider),
+        format_func=lambda p: provider_labels[p],
+        key="rag_llm_provider",
     )
-    st.sidebar.text_input(
-        t("rag_sidebar_model"),
-        value=st.session_state.get("rag_llm_model", "qwen3-14b"),
-        key="rag_llm_model",
-    )
+
+    if provider == "local":
+        st.sidebar.text_input(
+            t("rag_sidebar_llm_url"),
+            value=st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1"),
+            key="rag_llm_base_url",
+        )
+        st.sidebar.text_input(
+            t("rag_sidebar_model"),
+            value=st.session_state.get("rag_llm_model", "qwen3-14b"),
+            key="rag_llm_model",
+        )
+    elif provider == "claude":
+        st.sidebar.text_input(
+            t("rag_sidebar_api_key"),
+            value=st.session_state.get("rag_llm_api_key", ""),
+            type="password",
+            key="rag_llm_api_key",
+        )
+        current_claude_model = st.session_state.get("rag_llm_model", _CLAUDE_MODELS[0])
+        if current_claude_model not in _CLAUDE_MODELS:
+            current_claude_model = _CLAUDE_MODELS[0]
+        st.sidebar.selectbox(
+            t("rag_sidebar_model"),
+            options=_CLAUDE_MODELS,
+            index=_CLAUDE_MODELS.index(current_claude_model),
+            key="rag_llm_model",
+        )
+    else:  # openai_remote
+        st.sidebar.text_input(
+            t("rag_sidebar_api_key"),
+            value=st.session_state.get("rag_llm_api_key", ""),
+            type="password",
+            key="rag_llm_api_key",
+        )
+        st.sidebar.text_input(
+            t("rag_sidebar_model"),
+            value=st.session_state.get("rag_llm_model", "gpt-4o"),
+            key="rag_llm_model",
+        )
+
     st.sidebar.slider(t("rag_sidebar_topk"), 1, 20, 5, key="rag_top_k")
     st.sidebar.slider(
         t("rag_sidebar_max_tokens"), 512, 8192, 3000, step=256, key="rag_max_ctx_tokens"

@@ -815,15 +815,7 @@ This allows the user to investigate a specific witness without navigating to the
 
 #### Configuration
 
-The LLM settings used by the archive search pipeline are the same shared settings as the AI Assistant:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| LLM server URL | `http://127.0.0.1:9292/v1` | Base URL of any OpenAI-compatible API |
-| Model name | `qwen3-14b` | Model identifier sent in the request |
-| Response timeout | 300 s | Maximum wait time for LLM response |
-
-These settings are shown in the sidebar when the Investigación section is active and are kept in sync with the AI Assistant configuration.
+The LLM settings used by the archive search pipeline are the same shared settings as the AI Assistant (provider, API key, model, timeout). Changing the provider in the AI Assistant sidebar also applies here. See the [AI Assistant configuration](#configuration-1) section for the full list of settings and per-provider options.
 
 ---
 
@@ -940,14 +932,30 @@ The module scans all existing handles and numeric IDs in the GRAMPS file before 
 
 ### AI Genealogy Assistant (RAG)
 
-This module provides a local, privacy-preserving AI chat interface over your genealogical data. It requires no cloud services — all processing runs locally using a compatible LLM server such as [llama-swap](https://github.com/mostlygeek/llama-swap) with any OpenAI-compatible API.
+This module provides an AI chat interface over your genealogical data, supporting three LLM provider modes. All data stays local when using the local provider — no cloud services are required in that mode.
+
+---
+
+#### LLM providers
+
+The assistant supports three providers, selectable from the sidebar dropdown:
+
+| Provider | Description |
+|---|---|
+| **Local** (default) | Any OpenAI-compatible local server: [llama-swap](https://github.com/mostlygeek/llama-swap), Ollama, LM Studio, llama.cpp server, etc. No API key required. Privacy-preserving — no data leaves your machine. |
+| **Claude API** | Anthropic's hosted models via the official `anthropic` Python SDK. Requires an [Anthropic API key](https://console.anthropic.com/). Available models: `claude-sonnet-4-6`, `claude-opus-4-8`, `claude-haiku-4-5-20251001`. Embeddings are not available via Claude, so the index always uses TF-IDF retrieval in this mode. |
+| **OpenAI API** | OpenAI's hosted models. Requires an [OpenAI API key](https://platform.openai.com/). Default model: `gpt-4o` (any model name accepted). Embedding-based retrieval is available when the model supports `/v1/embeddings`. |
+
+API keys are stored only in session state (in memory) — they are never written to disk or logs.
+
+The provider setting is shared across all modules that use AI features (Archive Document Search, Candidate Identification, Family Completion). Changing it in the AI Assistant sidebar applies everywhere immediately.
 
 ---
 
 #### How it works
 
 1. When you navigate to the **AI Assistant** section, the app automatically indexes your loaded `.gramps` file and any additional documents you upload. Each person, family, and event with notes or witnesses becomes a searchable chunk.
-2. When you ask a question, the system retrieves the most relevant chunks (by TF-IDF keyword search, or semantic embedding search if your LLM server supports `/v1/embeddings`) and sends them as context to the LLM along with your question.
+2. When you ask a question, the system retrieves the most relevant chunks (by TF-IDF keyword search, or semantic embedding search if the selected provider and model support `/v1/embeddings`) and sends them as context to the LLM along with your question.
 3. The LLM answers using only the provided context and is instructed not to invent data absent from your records.
 
 ---
@@ -979,12 +987,33 @@ You can upload `.pdf` and `.txt` documents alongside the `.gramps` file (e.g. tr
 
 #### Configuration
 
-All settings are in the sidebar:
+All settings are in the sidebar. The available fields change depending on the selected provider:
+
+**Local provider:**
 
 | Setting | Default | Description |
 |---|---|---|
 | LLM server URL | `http://127.0.0.1:9292/v1` | Base URL of any OpenAI-compatible API (llama-swap, Ollama, LM Studio…) |
 | Model name | `qwen3-14b` | Model identifier sent in the request |
+
+**Claude API:**
+
+| Setting | Default | Description |
+|---|---|---|
+| API Key | _(required)_ | Anthropic API key — stored in memory only, never written to disk |
+| Model | `claude-sonnet-4-6` | Select from `claude-sonnet-4-6`, `claude-opus-4-8`, or `claude-haiku-4-5-20251001` |
+
+**OpenAI API:**
+
+| Setting | Default | Description |
+|---|---|---|
+| API Key | _(required)_ | OpenAI API key — stored in memory only, never written to disk |
+| Model name | `gpt-4o` | Any OpenAI model name (e.g. `gpt-4o-mini`, `gpt-4-turbo`) |
+
+**Common settings (all providers):**
+
+| Setting | Default | Description |
+|---|---|---|
 | Top-K | 5 | Number of chunks retrieved per question |
 | Max context tokens | 3000 | Total token budget for context + history |
 | Response timeout | 300 s | Maximum time to wait for an LLM response before showing an error |
@@ -995,7 +1024,7 @@ All settings are in the sidebar:
 
 **Response timeout** sets the maximum number of seconds the app will wait for the LLM to respond. The default of 300 s accommodates slow or quantized local models. Raise it for very long narrative generation tasks or lower it for fast inference servers. This setting is shared across the standalone AI Assistant and the embedded AI panels in other modules.
 
-> **Shared configuration**: the LLM settings (URL, model, Top-K, Max context tokens, Response timeout) are stored in session state and shared across all modules. Changing them in the AI Assistant sidebar immediately applies to the AI panels in Historical Context, Candidate Identification, and Family Completion. The relevant settings are also shown directly in the sidebar of each module that uses AI features.
+> **Shared configuration**: all LLM settings (provider, API key, model, Top-K, Max context tokens, Response timeout) are stored in session state and shared across all modules. Changing them in the AI Assistant sidebar immediately applies to the AI panels in Historical Context, Candidate Identification, and Family Completion.
 
 ---
 
@@ -1010,9 +1039,10 @@ The search index is saved to `data/rag_index/` and reused across sessions. It is
 
 #### Requirements
 
-- A locally running LLM server with an OpenAI-compatible API (tested with llama-swap + Qwen3-14B / Qwen3-8B GGUF models)
-- Python packages: `pypdf>=4.0`, `rank-bm25>=0.2.2` (installed automatically via `requirements.txt`)
-- No GPU required for the TF-IDF retrieval path; a GPU is only needed to run the LLM itself
+- **Local provider**: a running LLM server with an OpenAI-compatible API (tested with llama-swap + Qwen3-14B / Qwen3-8B GGUF models). No GPU required for TF-IDF retrieval; a GPU is only needed to run the model itself.
+- **Claude API**: an [Anthropic API key](https://console.anthropic.com/) and the `anthropic` Python package (included in `requirements.txt`).
+- **OpenAI API**: an [OpenAI API key](https://platform.openai.com/). No additional packages required beyond `requests`.
+- Python packages installed automatically via `requirements.txt`: `pypdf>=4.0`, `rank-bm25>=0.2.2`, `anthropic>=0.40.0`.
 
 ---
 
@@ -1149,5 +1179,5 @@ Both sources produce an identical internal data model. The app expects people, f
 | Visualization | plotly, matplotlib, seaborn |
 | Scientific computing | scipy |
 | Report templating | Jinja2, pdfkit |
-| AI / RAG | scikit-learn (TF-IDF), pypdf, rank-bm25, requests |
+| AI / RAG | scikit-learn (TF-IDF), pypdf, rank-bm25, requests, anthropic |
 | Gramps Web API client | requests (JWT auth, paginated REST) |

@@ -1821,6 +1821,8 @@ def _render_archive_search_panel(witness_name: str, wit_sorted):
         base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
         model = st.session_state.get("rag_llm_model", "qwen3-14b")
         llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+        llm_provider = st.session_state.get("rag_llm_provider", "local")
+        llm_api_key = st.session_state.get("rag_llm_api_key") or None
 
         # Años y lugares
         years = []
@@ -1876,6 +1878,8 @@ def _render_archive_search_panel(witness_name: str, wit_sorted):
                     base_url=base_url,
                     model=model,
                     llm_timeout=llm_timeout,
+                    provider=llm_provider,
+                    api_key=llm_api_key,
                 )
             put_result(store, result)
             save_store(store)
@@ -2263,6 +2267,8 @@ def _render_notas_archive_section_UNUSED(nf):
         base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
         model = st.session_state.get("rag_llm_model", "qwen3-14b")
         llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+        llm_provider = st.session_state.get("rag_llm_provider", "local")
+        llm_api_key = st.session_state.get("rag_llm_api_key") or None
 
         store = load_store()
 
@@ -2283,7 +2289,8 @@ def _render_notas_archive_section_UNUSED(nf):
                     continue
                 try:
                     result = search_archive_for_witness(
-                        candidate, base_url=base_url, model=model, llm_timeout=llm_timeout
+                        candidate, base_url=base_url, model=model, llm_timeout=llm_timeout,
+                        provider=llm_provider, api_key=llm_api_key,
                     )
                     put_result(store, result)
                 except Exception as e:
@@ -2325,7 +2332,8 @@ def _render_notas_archive_section_UNUSED(nf):
                 if search_clicked:
                     with st.spinner(t("archive_searching")):
                         result = search_archive_for_witness(
-                            candidate, base_url=base_url, model=model, llm_timeout=llm_timeout
+                            candidate, base_url=base_url, model=model, llm_timeout=llm_timeout,
+                            provider=llm_provider, api_key=llm_api_key,
                         )
                     put_result(store, result)
                     save_store(store)
