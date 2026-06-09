@@ -397,3 +397,104 @@ def fetch_gramps_db(base_url: str, token: str) -> GrampsDB:
         places=places,
         notes=notes,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cliente de escritura HTTP (primitivas)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GrampsWebWriter:
+    """
+    Primitivas HTTP de escritura para Gramps Web API.
+    Usado por GrampsApiWriter en modules/export/gramps_api_writer.py.
+    """
+
+    def __init__(self, base_url: str, token: str) -> None:
+        self._base = base_url.rstrip("/")
+        self._token = token
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
+
+    def _url(self, endpoint: str) -> str:
+        return f"{self._base}/{endpoint.lstrip('/')}"
+
+    def _get_with_etag(self, endpoint: str) -> tuple[dict, str]:
+        """GET un objeto y devuelve (body_dict, etag_value). Lanza HTTPError si falla."""
+        resp = requests.get(self._url(endpoint), headers=self._headers(), timeout=60)
+        resp.raise_for_status()
+        etag = resp.headers.get("ETag", "")
+        return resp.json(), etag
+
+    def _post(self, endpoint: str, payload: dict) -> dict:
+        """POST para crear un objeto nuevo. Devuelve el objeto creado."""
+        resp = requests.post(
+            self._url(endpoint),
+            json=payload,
+            headers=self._headers(),
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def _put(self, endpoint: str, handle: str, payload: dict, etag: str) -> dict:
+        """PUT para actualizar un objeto existente. Requiere ETag."""
+        headers = {**self._headers(), "If-Match": etag}
+        resp = requests.put(
+            self._url(f"{endpoint}/{handle}"),
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def post_transaction(self, operations: list[dict]) -> dict:
+        """
+        POST /api/transactions con lista de operaciones add/update/delete.
+        Operación atómica: todo o nada.
+        """
+        resp = requests.post(
+            self._url("/api/transactions"),
+            json=operations,
+            headers=self._headers(),
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def fetch_tag_handles(self) -> dict[str, str]:
+        """Devuelve {tag_name: handle} para todos los tags existentes."""
+        items = _paginate(self._base, "/api/tags", self._token)
+        return {item["name"]: item["handle"] for item in items if "name" in item and "handle" in item}
+
+    def fetch_source_handles(self) -> dict[str, str]:
+        """Devuelve {title: handle} para todas las fuentes existentes."""
+        items = _paginate(self._base, "/api/sources", self._token)
+        return {item["title"]: item["handle"] for item in items if "title" in item and "handle" in item}
+
+    def fetch_repo_handles(self) -> dict[str, str]:
+        """Devuelve {name: handle} para todos los repositorios existentes."""
+        items = _paginate(self._base, "/api/repositories", self._token)
+        return {item["name"]: item["handle"] for item in items if "name" in item and "handle" in item}
+
+    def fetch_note_texts_for_object(self, obj_type: str, handle: str) -> list[str]:
+        """
+        Devuelve la lista de textos de las notas vinculadas al objeto indicado.
+        obj_type: "people", "families", "events", etc.
+        """
+        try:
+            body, _ = self._get_with_etag(f"/api/{obj_type}/{handle}")
+        except requests.HTTPError:
+            return []
+        note_handles = body.get("note_list", [])
+        texts: list[str] = []
+        for nh in note_handles:
+            try:
+                note_body, _ = self._get_with_etag(f"/api/notes/{nh}")
+                text = note_body.get("text", {}).get("string", "") or note_body.get("text", "")
+                if isinstance(text, str):
+                    texts.append(text)
+            except requests.HTTPError:
+                continue
+        return texts

@@ -22,7 +22,7 @@ Data can be loaded in two ways: by uploading a **GRAMPS XML file** (`.gramps`) e
   - [Migration Intelligence](#migration-intelligence)
   - [Family Completion Engine](#family-completion-engine) *(includes manual Candidate Identification)*
   - [Investigación — Archive Document Search](#investigación--archive-document-search)
-  - [Export to GRAMPS (Write-back)](#export-to-gramps-write-back)
+  - [Export to GRAMPS (Write-back & API Sync)](#export-to-gramps-write-back)
   - [AI Genealogy Assistant (RAG)](#ai-genealogy-assistant-rag)
 - [AI Integration across modules](#ai-integration-across-modules)
 - [Getting Started](#getting-started)
@@ -837,59 +837,104 @@ These settings are shown in the sidebar when the Investigación section is activ
 
 ### Export to GRAMPS (Write-back)
 
-This module closes the research loop: it takes all the analytical work done in Rayzes — confirmed witness identities, detected inconsistencies, and Family Completion Engine candidates — and writes them back into the original GRAMPS file as standard notes and tags, without any third-party dependency.
+This module closes the research loop: it takes all the analytical work done in Rayzes — confirmed witness identities, detected inconsistencies, Family Completion Engine candidates, archive source citations, identity resolution results, and completed research tasks — and writes them back into GRAMPS as standard notes, tags, and source citations.
+
+Two write-back paths are available:
+
+- **Download as .gramps file** — generates an enriched copy of the GRAMPS XML file for local import. Works with both file-upload and Gramps Web API data sources.
+- **Sync with Gramps Web API** — writes changes directly to the live server, with no file to manage. Only available when a Gramps Web API connection is active.
 
 ---
 
 #### What it writes
 
+**Group 1 — available in both modes**
+
 | Data source | Written as | Target in GRAMPS |
 |---|---|---|
 | Confirmed witness links (`confirmed_links.json`) | `<note>` on the person | Person record |
-| Active inconsistencies (`dismissed_inconsistencies.json` excluded) | `<tagref>` pointing to a `GenHelper:Error` or `GenHelper:Warning` tag | Person or family record |
+| Confirmed witness event notes (`confirmed_links.json`, `note` field) | `<note>` on the event's Witness attribute | Event attribute |
+| Active inconsistencies (excluding `dismissed_inconsistencies.json`) | `GenHelper:Error` or `GenHelper:Warning` tag | Person or family record |
 | Family Completion Engine candidates (prob ≥ threshold) | `<note>` on the family | Family (marriage) record |
 
-**Confirmation notes** are worded as:
+**Group 2 — API sync mode only**
+
+| Data source | Written as | Target in GRAMPS |
+|---|---|---|
+| Archive document findings (`archive_findings.json`) | `Repository` + `Source` + `Citation` | Person record (citation list) |
+| Identity resolution pairs (`identity_resolution_results.json`, prob ≥ threshold) | `<note>` on the person | Person record |
+| Completed research tasks (`research_tasks.json`, status=done with source) | `<note>` on the person | Person record |
+
+**Note wording examples:**
+
 > *"Testigo confirmado: [witness name] identificado como [person name] ([GRAMPS ID]) por GenHelper [date]."*
 
-**Inconsistency tags** use two fixed tag definitions that are created in the GRAMPS file if they do not already exist:
+> *"Candidato probable a [father/mother] de [orphan name]: [candidate name] (prob=XX%). Factores: F1=X, F4=X, F5=X. Generado por GenHelper [date]."*
+
+> *"Posible identificación con testigo '[witness name]' (confianza XX%) por GenHelper [date]."*
+
+> *"Tarea completada: [title]. Fuente: [found_source]. [notes] [GenHelper date]"*
+
+**Inconsistency tags** use two fixed tag definitions:
 - `GenHelper:Error` (red `#CC0000`) — biological impossibilities
 - `GenHelper:Warning` (orange `#FF8C00`) — statistically anomalous but possible
 
-**Candidate notes** are worded as:
-> *"Candidato probable a [father/mother] de [orphan name]: [candidate name] (prob=XX%). Factores: F1=X, F4=X, F5=X. Generado por GenHelper [date]."*
-
 ---
 
-#### Collision-safe ID allocation
+#### API sync — write strategy
 
-The module scans the full set of existing handles and numeric IDs (notes, tags, persons, families, events, places) in the GRAMPS file before creating anything new. New note IDs follow the `N{NNNN}` pattern; tag IDs follow `T{NNNN}`. New handles are generated as `_` + `secrets.token_hex(14)` (28-character hex strings) and checked against all existing handles before use. No existing data is ever modified or deleted.
+When syncing to Gramps Web API, two strategies are available (selectable in the **Advanced options** expander):
+
+- **Single transaction (recommended)**: all standard operations are sent in one atomic `POST /api/transactions` call — either everything lands or nothing does. If the server rejects the transaction (e.g. does not support intra-transaction note references), the module automatically falls back to sequential mode.
+- **Individual requests (fallback)**: each note creation (`POST /api/notes`) and object update (`PUT /api/{type}/{handle}`) is made separately, with ETag-based conflict detection. Partial failures are reported in the change log rather than rolling back.
+
+Archive citations (Group 2, item #5) always use individual requests internally because they require a multi-step chain: Repository → Source → Citation → Person update.
 
 ---
 
 #### Duplicate detection
 
-Before adding any note or tag, the module checks whether the target person or family already carries an identical or equivalent annotation — both from the original file and from any notes added earlier in the same export session. Duplicates are silently skipped.
+Before writing any note or tag, the module checks whether the target object already carries an equivalent annotation — both on the live server (for API sync) and from the current session's in-progress writes. Duplicates are silently skipped. The check uses text prefix matching identical to the file-download path.
+
+---
+
+#### Collision-safe ID allocation (file-download mode)
+
+The module scans all existing handles and numeric IDs in the GRAMPS file before creating anything new. Note IDs follow `N{NNNN}`, tag IDs follow `T{NNNN}`, and handles are `_` + `secrets.token_hex(14)` (28-character hex strings checked against all existing handles). No existing data is ever modified or deleted.
 
 ---
 
 #### UI
 
-- **Checkboxes** to select which data categories to include (confirmation notes, inconsistency tags, candidate notes)
-- **Minimum probability slider** (default 65 %) for candidate notes
-- **Preview metrics**: how many notes and tags would be added before generating the file
-- **Tree mismatch warning**: if the loaded `.gramps` file contains significantly more or fewer persons than the saved batch results, a warning is shown before the user proceeds
-- **Download button**: generates the enriched `.gramps` file in memory and offers it as a direct download — nothing is written to disk on the server
-- **Expandable change log**: lists every note and tag added, with the affected person or family ID
+**Export destination selector** (shown when a Gramps Web API connection is active):
+- `⬇️ Download as .gramps file` — classic path, always available
+- `🌐 Sync with Gramps Web API` — direct server write, requires active connection
+
+**Group 1 checkboxes** (both modes):
+- Witness confirmation notes (default: on)
+- Inconsistency tags (default: on)
+- Family Completion Engine candidate notes (default: on)
+- Minimum probability slider for candidates (default: 65 %)
+
+**Group 2 checkboxes** (API mode only, default: off):
+- Archive source citations
+- Identity resolution notes + confidence threshold slider (default: 75 %)
+- Completed research task notes
+
+**Preview metrics**: how many items of each type would be written, computed before any action is taken.
+
+**Tree mismatch warning**: shown if the loaded data diverges significantly from the saved batch results.
+
+**Sync result**: success/partial/error banner with count of operations applied. An expandable **change log** lists every note, tag, and citation written, with the affected person or family ID.
 
 ---
 
 #### Technical notes
 
-- Parsing and serialisation use **lxml** with a fallback to the standard library `xml.etree.ElementTree` if lxml is not available
-- The output file is gzip-compressed (`.gramps` format), identical to what GRAMPS itself produces
-- Special characters in notes (`&`, `<`, `>`) are escaped automatically by both lxml and ElementTree — no manual escaping required
-- The module only reads the GRAMPS file that is already loaded in the sidebar — no separate upload is needed
+- File-download path: **lxml** with fallback to `xml.etree.ElementTree`; output is gzip-compressed `.gramps` identical to what GRAMPS produces
+- API sync path: `requests` with `Authorization: Bearer {token}`; all writes use `timeout=30 s`; ETags are used for PUT operations
+- Both paths share the same deduplication and note-text logic; only the output target differs
+- The module works in both file-upload and Gramps Web API data source modes; inconsistency detection adapts automatically to the active source
 
 ---
 
@@ -1056,8 +1101,9 @@ The following files in `data/` are created and updated automatically as you use 
 | `dismissed_inconsistencies.json` | Inconsistencies manually dismissed as false positives; dismissed items are excluded from Export tags |
 | `historical/<place>.json` | Historical events uploaded per municipality for the Historical Context sub-page |
 | `family_completion_results.json` | Manually confirmed parent–child candidates from the Family Completion Engine; fed into Export candidate notes |
-| `identity_resolution_results.json` | Scored candidate pairs from the Tree–Witness Identity Resolution page |
-| `archive_findings.json` | Cached historical archive search results per witness (keyed by name + note); produced by the Investigación module and the Superpadrinos archive panel |
+| `identity_resolution_results.json` | Scored candidate pairs from the Tree–Witness Identity Resolution page; fed into Export identity resolution notes |
+| `archive_findings.json` | Cached historical archive search results per witness (keyed by name + note); produced by the Investigación module and the Superpadrinos archive panel; fed into Export archive source citations |
+| `research_tasks.json` | Research task list from the Investigación module; completed tasks with a found source are fed into Export task notes |
 | `rag_index/` | Search index for the AI Assistant (chunks, TF-IDF matrix, optional embeddings, pre-computed statistics); rebuilt automatically when source data changes |
 
 These files persist between sessions. Back them up if you want to preserve your review work.
