@@ -415,10 +415,12 @@ def render_page() -> None:
     st.caption(t("rag_page_caption"))
 
     content_bytes = st.session_state.get("shared_gramps_bytes")
-    if not content_bytes and not st.session_state.get("_gramps_web_db_override"):
+    override_db = st.session_state.get("_gramps_web_db_override")
+    if not content_bytes and not override_db:
         st.info(t("rag_no_gramps_file"))
         return
     if not content_bytes:
+        # API mode: RAG index requires raw bytes to build; inform the user
         st.info(t("rag_no_gramps_file"))
         return
 

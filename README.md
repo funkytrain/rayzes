@@ -24,6 +24,7 @@ Data can be loaded in two ways: by uploading a **GRAMPS XML file** (`.gramps`) e
   - [Investigación — Archive Document Search](#investigación--archive-document-search)
   - [Export to GRAMPS (Write-back & API Sync)](#export-to-gramps-write-back)
   - [AI Genealogy Assistant (RAG)](#ai-genealogy-assistant-rag)
+  - [Vincular Imágenes (Ecclesiastical Image Linker)](#vincular-imágenes-ecclesiastical-image-linker)
 - [AI Integration across modules](#ai-integration-across-modules)
 - [Getting Started](#getting-started)
 - [Data Format](#data-format)
@@ -1046,6 +1047,72 @@ The search index is saved to `data/rag_index/` and reused across sessions. It is
 
 ---
 
+### Vincular Imágenes (Ecclesiastical Image Linker)
+
+This module automates linking scanned ecclesiastical images (baptism, marriage, and death certificates from parish archives) to the correct events and individuals in GRAMPS.
+
+It works in two modes, selectable automatically based on the active data source:
+
+- **File mode**: upload a `.gramps` file, run the scan, download a modified `.gramps` file ready to import back into GRAMPS Desktop
+- **API mode**: connect to Gramps Web API; images are uploaded directly to the server and linked in place — no file download needed
+
+---
+
+#### Image naming convention
+
+The module expects files named according to a consistent pattern:
+
+```
+TIPO_EVENTO NOMBRE_COMPLETO AÑO [parte].ext
+```
+
+Examples:
+```
+BAUTISMO ANTONIO FERRANDIS MORA 1755.jpg
+MATRIMONIO ANTONIO BLASCO Y SEBASTIANA NADAL 1585.jpg
+DEFUNCION RAFAELA BURLO PORTES 1892.jpg
+BAUTISMO FRANCISCO MULA MORENO 1651 1.jpg
+```
+
+Supported event types: `BAUTISMO`, `MATRIMONIO`, `DEFUNCION`, `VELACION`, `CONFIRMACION`. If the event type is unrecognised but a name is parseable, the image is associated to the person directly rather than to a specific event.
+
+Marriage images (`MATRIMONIO`) are linked to the family record, not to a person.
+
+---
+
+#### How it works
+
+1. **Scan**: the module scans the selected folder, extracts type + name + year from each filename, and compares names against all people in the tree using a two-stage matching algorithm:
+   - **Automatic match** (token similarity ≥ 0.6): image is immediately queued for linking, associated to the most likely event of the correct type and year
+   - **Fuzzy suggestion** (combined score ≥ 0.30): up to 3 candidate IDs are shown in an interactive table for manual confirmation
+   - **Homonym disambiguation**: when two people share the same name, the year in the filename is used to break the tie by finding whichever person has the relevant event closest to that year
+
+2. **Review**: the results page shows four metric counters (total images / new / already processed / unparseable) plus two tables:
+   - **Automatic matches** (read-only): filename, type, name, year, GRAMPS destination
+   - **Pending images** (editable): same columns plus three fuzzy suggestions with IDs, names, and similarity scores — the user fills in a `gramps_id_confirmado` column for any image they want to confirm
+
+3. **Apply**: a single button applies all automatic matches plus any manually confirmed ones:
+   - **File mode**: generates a modified `.gramps` file with all `<object>` blocks and `<objref>` references inserted. The XML is manipulated as plain text (never re-serialised via ElementTree) to preserve the original `xmlns` attribute, which GRAMPS requires to determine the schema version.
+   - **API mode**: uploads each image file to the Gramps Web API (`POST /api/media`) and attaches the returned media handle to the target event, family, or person (`GET` + `PUT` with ETag)
+
+4. **Registry**: every successfully linked image is recorded in `data/media_linker_registro.json`. On subsequent scans of the same folder, already-processed images are skipped automatically — only new arrivals are analysed.
+
+---
+
+#### Persistent data
+
+| File | Purpose |
+|---|---|
+| `data/media_linker_registro.json` | Registry of already-linked images (filename → GRAMPS ID + destination + date); prevents re-processing in future sessions |
+
+---
+
+#### Standalone script
+
+The same logic is also available as a standalone command-line script (`gramps_link_images.py` in the project root), which operates directly on a `.gramps` file without launching the Streamlit app. Run `python gramps_link_images.py --help` for usage.
+
+---
+
 ## AI Integration across modules
 
 The local AI assistant is not limited to its own dedicated section. It is embedded as an **optional, non-intrusive complement** in three other modules. In each case the AI panel appears inside a collapsed expander — if the LLM server is not running, the rest of the page is completely unaffected.
@@ -1135,6 +1202,7 @@ The following files in `data/` are created and updated automatically as you use 
 | `archive_findings.json` | Cached historical archive search results per witness (keyed by name + note); produced by the Investigación module and the Superpadrinos archive panel; fed into Export archive source citations |
 | `research_tasks.json` | Research task list from the Investigación module; completed tasks with a found source are fed into Export task notes |
 | `rag_index/` | Search index for the AI Assistant (chunks, TF-IDF matrix, optional embeddings, pre-computed statistics); rebuilt automatically when source data changes |
+| `media_linker_registro.json` | Registry of images already linked to GRAMPS by the Vincular Imágenes module; skipped on future scans |
 
 These files persist between sessions. Back them up if you want to preserve your review work.
 

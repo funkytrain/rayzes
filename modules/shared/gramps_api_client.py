@@ -48,7 +48,7 @@ _PAGESIZE = 200
 def _paginate(base_url: str, endpoint: str, token: str, extra: dict | None = None) -> list:
     headers = {"Authorization": f"Bearer {token}"}
     all_items: list = []
-    page = 0
+    page = 1
     while True:
         params = {"page": page, "pagesize": _PAGESIZE}
         if extra:
@@ -403,6 +403,67 @@ def fetch_gramps_db(base_url: str, token: str) -> GrampsDB:
 # Cliente de escritura HTTP (primitivas)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def download_gramps_export(base_url: str, token: str,
+                           poll_interval: float = 1.5,
+                           max_wait: int = 300) -> bytes:
+    """
+    Descarga el archivo .gramps completo del servidor Gramps Web.
+
+    Flujo asíncrono:
+      1. POST /api/exporters/gramps/file  → {"task": {"id": "...", "href": "..."}}
+      2. GET  /api/tasks/{id}             → polling hasta state == "SUCCESS"
+      3. GET  /api/exporters/gramps/file/processed/{filename}  → bytes gzip
+
+    Lanza RuntimeError si la tarea falla o supera max_wait segundos.
+    """
+    import time
+
+    base = base_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
+
+    # 1. Lanzar tarea de exportación
+    resp = requests.post(f"{base}/api/exporters/gramps/file", headers=headers, timeout=30)
+    resp.raise_for_status()
+    task_id = resp.json()["task"]["id"]
+
+    # 2. Polling hasta SUCCESS
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        r = requests.get(f"{base}/api/tasks/{task_id}", headers=headers, timeout=15)
+        r.raise_for_status()
+        task = r.json()
+        state = task.get("state", "")
+        if state == "SUCCESS":
+            result = task.get("result", {})
+            # result puede llegar como dict, o como string JSON que hay que parsear
+            if isinstance(result, str):
+                try:
+                    import json as _json
+                    result = _json.loads(result)
+                except Exception:
+                    result = {}
+            dl_url  = result.get("url", "") if isinstance(result, dict) else ""
+            filename = (result.get("file_name", "") if isinstance(result, dict) else "") or dl_url.split("/")[-1]
+            if not filename:
+                raise RuntimeError(f"Tarea completada pero sin filename: {task}")
+            break
+        if state in ("FAILURE", "REVOKED"):
+            raise RuntimeError(f"La tarea de exportación falló: {task}")
+        time.sleep(poll_interval)
+    else:
+        raise RuntimeError(f"Timeout esperando exportación ({max_wait}s).")
+
+    # 3. Descargar el archivo — usar la URL completa del result si está disponible
+    download_path = dl_url if dl_url else f"/api/exporters/gramps/file/processed/{filename}"
+    dl = requests.get(
+        f"{base}{download_path}",
+        headers=headers,
+        timeout=120,
+    )
+    dl.raise_for_status()
+    return dl.content
+
+
 class GrampsWebWriter:
     """
     Primitivas HTTP de escritura para Gramps Web API.
@@ -423,11 +484,11 @@ class GrampsWebWriter:
         """GET un objeto y devuelve (body_dict, etag_value). Lanza HTTPError si falla."""
         resp = requests.get(self._url(endpoint), headers=self._headers(), timeout=60)
         resp.raise_for_status()
-        etag = resp.headers.get("ETag", "")
+        etag = resp.headers.get("ETag", "*")
         return resp.json(), etag
 
     def _post(self, endpoint: str, payload: dict) -> dict:
-        """POST para crear un objeto nuevo. Devuelve el objeto creado."""
+        """POST para crear un objeto nuevo. Devuelve dict con al menos 'handle'."""
         resp = requests.post(
             self._url(endpoint),
             json=payload,
@@ -435,11 +496,15 @@ class GrampsWebWriter:
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json() if resp.content else {}
+        data = resp.json() if resp.content else {}
+        # La API puede devolver una lista de cambios: [{handle, new, old, type, _class}, ...]
+        if isinstance(data, list) and data:
+            return data[0]
+        return data
 
-    def _put(self, endpoint: str, handle: str, payload: dict, etag: str) -> dict:
-        """PUT para actualizar un objeto existente. Requiere ETag."""
-        headers = {**self._headers(), "If-Match": etag}
+    def _put(self, endpoint: str, handle: str, payload: dict, etag: str = "*") -> dict:
+        """PUT para actualizar un objeto existente. Usa If-Match: * para omitir validación ETag."""
+        headers = {**self._headers(), "If-Match": "*"}
         resp = requests.put(
             self._url(f"{endpoint}/{handle}"),
             json=payload,
@@ -447,21 +512,25 @@ class GrampsWebWriter:
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json() if resp.content else {}
+        data = resp.json() if resp.content else {}
+        if isinstance(data, list) and data:
+            return data[0]
+        return data
 
-    def post_transaction(self, operations: list[dict]) -> dict:
+    def post_transaction(self, operations: list[dict]) -> list:
         """
-        POST /api/transactions con lista de operaciones add/update/delete.
-        Operación atómica: todo o nada.
+        POST /api/transactions/ con lista de operaciones add/update/delete.
+        Usa force=true para evitar conflictos de ETag.
         """
         resp = requests.post(
-            self._url("/api/transactions"),
+            self._url("/api/transactions/"),
             json=operations,
+            params={"force": "true", "message": "GenHelper sync"},
             headers=self._headers(),
             timeout=60,
         )
         resp.raise_for_status()
-        return resp.json() if resp.content else {}
+        return resp.json() if resp.content else []
 
     def fetch_tag_handles(self) -> dict[str, str]:
         """Devuelve {tag_name: handle} para todos los tags existentes."""
@@ -498,3 +567,52 @@ class GrampsWebWriter:
             except requests.HTTPError:
                 continue
         return texts
+
+    def upload_media_object(self, img_path: str, descripcion: str) -> str:
+        """
+        POST /api/media con multipart/form-data.
+        Sube la imagen y crea el MediaObject en Gramps Web.
+        Devuelve el handle del objeto creado.
+        """
+        import mimetypes
+        import json as _json
+
+        mime = mimetypes.guess_type(img_path)[0] or "image/jpeg"
+        media_data = {
+            "_class": "Media",
+            "path":   img_path,
+            "mime":   mime,
+            "desc":   descripcion,
+        }
+        auth_headers = {"Authorization": f"Bearer {self._token}"}
+        with open(img_path, "rb") as fobj:
+            resp = requests.post(
+                self._url("/api/media"),
+                headers=auth_headers,
+                files={"file": (img_path.split("/")[-1].split("\\")[-1], fobj, mime)},
+                data={"data": _json.dumps(media_data)},
+                timeout=120,
+            )
+        resp.raise_for_status()
+        created = resp.json() if resp.content else {}
+        return created.get("handle", "")
+
+    def add_objref_to_entity(self, obj_type: str, obj_handle: str,
+                              media_handle: str) -> None:
+        """
+        Añade una referencia de media (media_list) al objeto indicado.
+        obj_type: "events" | "families" | "people"
+        Evita duplicados comprobando la media_list existente.
+        """
+        body, etag = self._get_with_etag(f"/api/{obj_type}/{obj_handle}")
+        media_list = list(body.get("media_list", []))
+        if any(ref.get("ref") == media_handle for ref in media_list):
+            return
+        media_list.append({
+            "_class":  "MediaRef",
+            "ref":     media_handle,
+            "rect":    [],
+            "private": False,
+        })
+        body["media_list"] = media_list
+        self._put(f"/api/{obj_type}", obj_handle, body, etag)

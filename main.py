@@ -16,8 +16,8 @@ _lang_display = st.sidebar.selectbox(
 set_lang("es" if _lang_display == "Español" else "en")
 st.sidebar.markdown("---")
 
-SECTION_KEYS = ["general", "testigos", "consanguinidad", "adn", "migration", "family_completion", "investigacion", "export", "rag_assistant"]
-SECTION_LABELS = [t("section_general"), t("section_testigos"), t("section_consanguinidad"), t("section_adn"), t("section_migration"), t("section_family_completion"), t("section_investigacion"), t("section_export"), t("section_rag_assistant")]
+SECTION_KEYS = ["general", "testigos", "consanguinidad", "adn", "migration", "family_completion", "investigacion", "export", "rag_assistant", "media_linker"]
+SECTION_LABELS = [t("section_general"), t("section_testigos"), t("section_consanguinidad"), t("section_adn"), t("section_migration"), t("section_family_completion"), t("section_investigacion"), t("section_export"), t("section_rag_assistant"), t("section_media_linker")]
 
 if "active_section_key" not in st.session_state:
     st.session_state["active_section_key"] = SECTION_KEYS[0]
@@ -44,6 +44,8 @@ elif active_section == "export":
     from modules.export import render_sidebar_upload, render_sidebar, render_page
 elif active_section == "rag_assistant":
     from modules.rag_assistant import render_sidebar_upload, render_sidebar, render_page
+elif active_section == "media_linker":
+    from modules.media_linker import render_sidebar_upload, render_sidebar, render_page
 
 # 1. File upload del módulo activo
 render_sidebar_upload()
@@ -52,18 +54,24 @@ render_sidebar_upload()
 from modules.shared.gramps_api_client import get_token as _get_token, fetch_gramps_db as _fetch_gramps_db
 
 st.sidebar.markdown("---")
+_is_connected = bool(st.session_state.get("gramps_web_connected"))
 with st.sidebar.expander(t("gramps_web_expander_label"), expanded=False):
-    st.text_input(t("gramps_web_url_label"), key="gramps_web_url",
-                  placeholder="http://192.168.1.x:5000")
-    st.text_input(t("gramps_web_user_label"), key="_gramps_web_username_input")
-    _pwd = st.text_input(t("gramps_web_pwd_label"), type="password",
-                         key="_gramps_web_pwd_input")
-
-    _col_con, _col_dis = st.columns(2)
-    with _col_con:
-        _connect_clicked = st.button(t("gramps_web_connect_btn"), key="_gweb_connect")
-    with _col_dis:
-        _disconnect_clicked = st.button(t("gramps_web_disconnect_btn"), key="_gweb_disconnect")
+    if _is_connected:
+        st.success(t("gramps_web_status_connected",
+                     url=st.session_state.get("gramps_web_url_saved", st.session_state.get("gramps_web_url", ""))))
+        _disconnect_clicked = st.button(t("gramps_web_disconnect_btn"),
+                                        key="_gweb_disconnect", type="primary")
+        _connect_clicked = False
+        _pwd = ""
+    else:
+        st.text_input(t("gramps_web_url_label"), key="gramps_web_url",
+                      placeholder="http://192.168.1.x:5000")
+        st.text_input(t("gramps_web_user_label"), key="_gramps_web_username_input")
+        _pwd = st.text_input(t("gramps_web_pwd_label"), type="password",
+                             key="_gramps_web_pwd_input")
+        _connect_clicked = st.button(t("gramps_web_connect_btn"),
+                                     key="_gweb_connect", type="primary")
+        _disconnect_clicked = False
 
     if _connect_clicked:
         _url = (st.session_state.get("gramps_web_url") or "").strip()
@@ -76,9 +84,9 @@ with st.sidebar.expander(t("gramps_web_expander_label"), expanded=False):
                 st.session_state["gramps_web_token"] = _token
                 st.session_state["gramps_web_connected"] = True
                 st.session_state["gramps_web_db_cache"] = None
+                st.session_state["gramps_web_url_saved"] = _url
                 if "_gramps_web_pwd_input" in st.session_state:
                     del st.session_state["_gramps_web_pwd_input"]
-                st.success(t("gramps_web_connected_ok"))
                 st.rerun()
             except _requests.HTTPError as _e:
                 st.error(t("gramps_web_auth_error", e=_e))
@@ -89,19 +97,15 @@ with st.sidebar.expander(t("gramps_web_expander_label"), expanded=False):
 
     if _disconnect_clicked:
         for _k in ("gramps_web_token", "gramps_web_connected", "gramps_web_db_cache",
-                   "_gramps_web_db_override"):
+                   "_gramps_web_db_override", "tst_gramps_xml_path", "gramps_web_url_saved"):
             st.session_state.pop(_k, None)
         st.rerun()
-
-if st.session_state.get("gramps_web_connected"):
-    st.sidebar.success(t("gramps_web_status_connected",
-                          url=st.session_state.get("gramps_web_url", "")))
 
 # ── Cargar GrampsDB desde API si hay conexión activa ─────────────────────────
 if st.session_state.get("gramps_web_connected"):
     _cached_db = st.session_state.get("gramps_web_db_cache")
     if _cached_db is None:
-        _api_url   = st.session_state.get("gramps_web_url", "")
+        _api_url   = st.session_state.get("gramps_web_url_saved", st.session_state.get("gramps_web_url", ""))
         _api_token = st.session_state.get("gramps_web_token", "")
         if _api_url and _api_token:
             try:

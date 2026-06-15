@@ -55,9 +55,8 @@ class GrampsIDAllocator:
                     max_n = max(max_n, int(m.group(1)))
             return max_n
 
-        note_ids = [p.id for p in db.notes.values()] if hasattr(db, 'notes') else []
-        # notes dict: handle → text; no IDs stored. Infer from max handle numeric suffix.
-        max_note = _max_numeric_id(db.notes.keys())
+        # notes dict: handle → str (text). No .id attribute — use keys as handles.
+        max_note = _max_numeric_id(db.notes.keys()) if hasattr(db, 'notes') else 0
 
         return cls(
             existing_handles=handles,
@@ -202,15 +201,26 @@ class GrampsWriter:
             raw = gzip.decompress(raw)
 
         self._backend: str
+        self._root = None
         try:
             from lxml import etree as _lxml
             parser = _lxml.XMLParser(remove_blank_text=True, recover=True)
             self._root = _lxml.fromstring(raw, parser)
             self._backend = 'lxml'
         except Exception:
-            import xml.etree.ElementTree as ET
-            self._root = ET.fromstring(raw)
-            self._backend = 'et'
+            pass
+        if self._root is None:
+            try:
+                import xml.etree.ElementTree as ET
+                self._root = ET.fromstring(raw)
+                self._backend = 'et'
+            except Exception as e:
+                raise ValueError(
+                    f"No se pudo parsear el XML del archivo .gramps: {e}. "
+                    f"Primeros 200 bytes: {raw[:200]!r}"
+                ) from e
+        if self._root is None:
+            raise ValueError("El XML del archivo .gramps resultó vacío tras el parseo.")
 
         self._db = db
         self._alloc = GrampsIDAllocator.from_db_and_xml(db, self._root, self._backend)

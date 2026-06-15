@@ -486,7 +486,7 @@ def build_geographic_map(line: list, G):
 # Renderizadores de pestañas
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_founders(G, content: bytes, max_gen: int):
+def _render_founders(G, content: bytes | None, max_gen: int):
     st.header(t("adn_founders_title"))
     st.caption(t("adn_founders_caption"))
 
@@ -556,9 +556,12 @@ def _render_founders(G, content: bytes, max_gen: int):
     with sub_b:
         st.caption(t("adn_pedigree_wide_caption"))
         if st.button(t("adn_compute_pedigree_wide"), key="adn_btn_pedigree_wide"):
-            with st.spinner(t("adn_computing_wide")):
-                df_wide = _cached_founder_stats(content, max_gen)
-            st.session_state["adn_founder_wide_df"] = df_wide
+            if content is None:
+                st.warning(t("adn_upload_warning"))
+            else:
+                with st.spinner(t("adn_computing_wide")):
+                    df_wide = _cached_founder_stats(content, max_gen)
+                st.session_state["adn_founder_wide_df"] = df_wide
 
         df_wide = st.session_state.get("adn_founder_wide_df")
         if df_wide is not None and not df_wide.empty:
@@ -767,11 +770,11 @@ def render_page():
     max_gen = st.session_state.get("adn_max_gen", 12)
 
     override_db = st.session_state.get("_gramps_web_db_override")
+    content = st.session_state.get("adn_uploaded_bytes") or st.session_state.get("shared_gramps_bytes")
     if override_db is not None:
         people   = override_db.to_persons_dict()
         families = override_db.to_families_dict()
     else:
-        content = st.session_state.get("adn_uploaded_bytes")
         if content is None:
             st.info(t("adn_upload_warning"))
             return

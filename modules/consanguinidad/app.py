@@ -1145,8 +1145,13 @@ def render_page():
         return
 
     # Rebuild graph from parsed data (fast: just node/edge insertion)
-    people, fams = _cached_parse_gramps(content)
-    G = build_graph(people, fams)
+    if override_db is not None:
+        _people_g = override_db.to_persons_dict()
+        _fams_g   = override_db.to_families_dict()
+        G = build_graph(_people_g, _fams_g)
+    else:
+        people, fams = _cached_parse_gramps(content)
+        G = build_graph(people, fams)
 
     df = pd.DataFrame(results)
     if not df.empty:

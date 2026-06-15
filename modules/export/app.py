@@ -78,10 +78,12 @@ def _load_all_inconsistencies(content_bytes: bytes | None, db: GrampsDB | None =
             stats, _ = _cached_stats(content_bytes)
         elif db is not None:
             resolved_db = db
-            from modules.general.app import _cached_stats
             # En modo API no hay content_bytes; recalcular stats desde db directamente
             try:
-                stats, _ = _cached_stats(None)
+                from modules.general.app import compute_file_statistics, compute_windowed_stats
+                _pe = db.to_persons_ext()
+                _fe = db.to_families_ext()
+                stats = compute_file_statistics(_pe, _fe)
             except Exception:
                 stats = {}
         else:
@@ -361,6 +363,19 @@ def render_page() -> None:
     # ═════════════════════════════════════════════════════════════════════════
     if not use_api:
         if st.button(t("exp_generate_gramps"), type="primary", key="exp_btn_generate"):
+            # En modo API sin bytes locales, descargar el .gramps del servidor
+            if content_bytes is None and api_connected:
+                _api_url   = st.session_state.get("gramps_web_url_saved", st.session_state.get("gramps_web_url", "")).rstrip("/")
+                _api_token = st.session_state.get("gramps_web_token", "")
+                with st.spinner("Descargando archivo del servidor (puede tardar unos segundos)..."):
+                    try:
+                        from modules.shared.gramps_api_client import download_gramps_export
+                        content_bytes = download_gramps_export(_api_url, _api_token)
+                        st.session_state["shared_gramps_bytes"] = content_bytes
+                        st.session_state["shared_gramps_name"] = "gramps_web.gramps"
+                    except Exception as _e:
+                        st.error(f"No se pudo descargar el archivo del servidor: {_e}")
+                        return
             if content_bytes is None:
                 st.error("No hay archivo .gramps cargado para generar la descarga.")
                 return
@@ -417,7 +432,7 @@ def render_page() -> None:
         if st.button(t("exp_sync_api"), type="primary", key="exp_btn_sync"):
             from modules.export.gramps_api_writer import GrampsApiWriter
 
-            base_url = st.session_state.get("gramps_web_url", "")
+            base_url = st.session_state.get("gramps_web_url_saved", st.session_state.get("gramps_web_url", ""))
             token = st.session_state.get("gramps_web_token", "")
 
             with st.spinner(t("exp_syncing")):

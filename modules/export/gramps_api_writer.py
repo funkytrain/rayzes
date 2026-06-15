@@ -70,18 +70,38 @@ def _relevance_to_confidence(score: float) -> int:
     return 0
 
 
-def _note_payload(text: str) -> dict:
+def _note_payload(text: str, handle: str | None = None) -> dict:
+    """Formato de nota compatible con POST /api/notes/ y transactions."""
+    import time as _time
+    payload: dict = {
+        "gramps_id": "N_GH_" + secrets.token_hex(6),
+        "text": {"string": text, "tags": []},
+        "type": "General",
+        "private": False,
+        "tag_list": [],
+        "format": 0,
+    }
+    return payload
+
+
+def _note_tx_payload(text: str, handle: str) -> dict:
+    """Formato de nota para uso dentro de /api/transactions/ (requiere _class en campos internos)."""
+    import time as _time
     return {
         "_class": "Note",
-        "text": {"_class": "StyledText", "string": text},
-        "type": {"_class": "NoteType", "string": "General"},
+        "handle": handle,
+        "gramps_id": "N_GH_" + secrets.token_hex(6),
+        "text": {"_class": "StyledText", "string": text, "tags": []},
+        "type": {"_class": "NoteType", "value": 1, "string": ""},
         "private": False,
+        "tag_list": [],
+        "format": 0,
+        "change": int(_time.time()),
     }
 
 
 def _tag_payload(name: str) -> dict:
     return {
-        "_class": "Tag",
         "name": name,
         "color": _TAG_COLORS.get(name, "#888888"),
         "priority": 0,
@@ -160,9 +180,17 @@ class GrampsApiWriter:
     # ── Resolución de handles ─────────────────────────────────────────────────
 
     def _resolve_person_handle(self, pid: str) -> str | None:
-        """pid puede ser handle directo (empieza con '_') o gramps_id."""
-        if pid.startswith("_"):
-            return pid if pid in self._db.persons else None
+        """pid puede ser handle directo (con o sin '_' inicial) o gramps_id (Ixxxx)."""
+        if not pid:
+            return None
+        # Handles GRAMPS XML llevan '_' prefijo; la DB de API los almacena sin él
+        handle_candidate = pid.lstrip("_")
+        if handle_candidate in self._db.persons:
+            return handle_candidate
+        # Puede que el handle venga sin '_' y ya sea correcto
+        if pid in self._db.persons:
+            return pid
+        # Último recurso: buscar por gramps_id
         return self._db.persons_by_gramps_id.get(pid)
 
     def _resolve_family_handle(self, fid: str) -> str | None:
@@ -177,20 +205,15 @@ class GrampsApiWriter:
     def _queue_note_on_object(self, obj_class: str, obj_type: str, handle: str, text: str) -> None:
         """
         Añade a self._ops dos operaciones:
-        1. add Note
-        2. update objeto con el handle de la nota
-
-        Nota: en modo transaction, el servidor asigna el handle de la nota.
-        Para la referencia en el update, usamos un handle temporal que el servidor
-        resolverá. Si el servidor no soporta refs intra-transacción, sync() en modo
-        sequential ejecutará add-note → captura handle → update objeto.
+        1. add Note (usa _handle como handle temporal para sequential)
+        2. update objeto añadiendo la nota
         """
-        note_handle = _new_handle()  # temporal; en sequential se reemplaza con el real
+        note_handle = _new_handle()  # sin '_': prefijo generado internamente
         self._ops.append({
             "_class": "Note",
             "_op": "add",
-            "_handle": note_handle,  # hint para sequential; ignorado en transaction
-            **_note_payload(text),
+            "_handle": note_handle,
+            "_text": text,  # texto original para construir payload en _exec_sequential
         })
         self._ops.append({
             "_class": obj_class,
@@ -625,29 +648,40 @@ class GrampsApiWriter:
             op_type = op.get("_op")
 
             if op_type == "add":
-                # Nota nueva
-                payload = {k: v for k, v in op.items() if not k.startswith("_")}
-                tx.append({"type": "add", **payload})
+                # Nota nueva — formato para /api/transactions/
+                note_handle = op["_handle"].lstrip("_")
+                text = op.get("_text", "")
+                note_new = _note_tx_payload(text, note_handle)
+                tx.append({
+                    "type": "add",
+                    "_class": "Note",
+                    "handle": note_handle,
+                    "old": None,
+                    "new": note_new,
+                })
 
             elif op_type == "update":
-                # Actualizar objeto añadiendo una nota — construir payload mínimo
+                # Actualizar objeto añadiendo una nota con el handle sin '_'
                 obj_type = op["_obj_type"]
                 handle = op["_handle"]
                 obj_class = op["_class"]
-                # Obtener nota list actual del servidor
+                # Obtener body actual para construir old/new completos
                 try:
                     body, _ = self._web._get_with_etag(f"/api/{obj_type}/{handle}")
-                    note_list = list(body.get("note_list", []))
                 except requests.HTTPError:
-                    note_list = []
-                # El handle de la nota recién añadida está referenciado por _note_to_add
-                # En modo transaction no tenemos el handle real aún — incluimos el temporal
-                note_list.append(op["_note_to_add"])
+                    body = {"handle": handle}
+                import time as _time
+                note_handle_clean = op["_note_to_add"].lstrip("_")
+                old_body = dict(body)
+                new_body = dict(body)
+                new_body["note_list"] = list(body.get("note_list", [])) + [note_handle_clean]
+                new_body["change"] = int(_time.time())
                 tx.append({
                     "type": "update",
                     "_class": obj_class,
                     "handle": handle,
-                    "note_list": note_list,
+                    "old": old_body,
+                    "new": new_body,
                 })
 
             elif op_type == "tag":
@@ -659,22 +693,36 @@ class GrampsApiWriter:
 
                 # Crear el tag si no existe
                 if not tag_handle and tag_name not in pending_tag_creates:
-                    tx.append({"type": "add", **_tag_payload(tag_name)})
+                    tag_h = _new_handle().lstrip("_")
+                    tag_new = {**_tag_payload(tag_name), "handle": tag_h}
+                    tx.append({
+                        "type": "add",
+                        "_class": "Tag",
+                        "handle": tag_h,
+                        "old": None,
+                        "new": tag_new,
+                    })
                     pending_tag_creates.add(tag_name)
 
                 # Actualizar objeto con el tagref
+                import time as _time
                 try:
                     body, _ = self._web._get_with_etag(f"/api/{obj_type}/{handle}")
-                    tag_list = list(body.get("tag_list", []))
                 except requests.HTTPError:
-                    tag_list = []
+                    body = {"handle": handle}
+                old_body = dict(body)
+                new_body = dict(body)
+                tag_list = list(body.get("tag_list", []))
                 if tag_handle and tag_handle not in tag_list:
                     tag_list.append(tag_handle)
+                new_body["tag_list"] = tag_list
+                new_body["change"] = int(_time.time())
                 tx.append({
                     "type": "update",
                     "_class": obj_class,
                     "handle": handle,
-                    "tag_list": tag_list,
+                    "old": old_body,
+                    "new": new_body,
                 })
 
         return tx
@@ -693,9 +741,10 @@ class GrampsApiWriter:
             op_type = op.get("_op")
             try:
                 if op_type == "add":
-                    # Crear nota
-                    payload = {k: v for k, v in op.items() if not k.startswith("_")}
-                    created = self._web._post("/api/notes", payload)
+                    # Crear nota con formato correcto para POST /api/notes/
+                    text = op.get("_text", "")
+                    payload = _note_payload(text)
+                    created = self._web._post("/api/notes/", payload)
                     real_handle = created.get("handle", "")
                     note_handle_map[op["_handle"]] = real_handle
                     completed.append(op)

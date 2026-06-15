@@ -966,6 +966,54 @@ def render_sidebar_upload():
 
     if st.session_state.get("gramps_web_connected"):
         st.sidebar.info(t("gramps_web_source_active"))
+        # Si no hay xml_path en disco, intentar usar shared_gramps_bytes (subido manualmente)
+        if 'tst_gramps_xml_path' not in st.session_state or \
+                not Path(st.session_state['tst_gramps_xml_path']).exists():
+            _shared_bytes = st.session_state.get('shared_gramps_bytes')
+            if _shared_bytes:
+                _shared_name = st.session_state.get('shared_gramps_name', 'gramps_web.gramps')
+                _temp_path = BASE_DIR / f"temp_{_shared_name}"
+                _temp_path.write_bytes(_shared_bytes)
+                st.session_state['tst_gramps_xml_path'] = str(_temp_path)
+            else:
+                # Intentar descargar automáticamente desde la API
+                _api_url   = st.session_state.get("gramps_web_url_saved", st.session_state.get("gramps_web_url", "")).rstrip("/")
+                _api_token = st.session_state.get("gramps_web_token", "")
+                if _api_url and _api_token:
+                    try:
+                        from modules.shared.gramps_api_client import download_gramps_export
+                        with st.sidebar:
+                            with st.spinner("Descargando datos del servidor..."):
+                                _dl_bytes = download_gramps_export(_api_url, _api_token)
+                        _temp_path = BASE_DIR / "temp_gramps_web.gramps"
+                        _temp_path.write_bytes(_dl_bytes)
+                        st.session_state['tst_gramps_xml_path'] = str(_temp_path)
+                        st.session_state['shared_gramps_bytes'] = _dl_bytes
+                        st.session_state['shared_gramps_name'] = "gramps_web.gramps"
+                        st.rerun()
+                    except Exception as _e:
+                        st.sidebar.warning(
+                            f"No se pudo descargar automáticamente ({_e}). "
+                            "Sube un archivo .gramps manualmente."
+                        )
+                        st.sidebar.file_uploader(
+                            t("sidebar_gramps_uploader"), type=['gramps', 'xml'],
+                            key="tst_api_fallback_upload"
+                        )
+                else:
+                    st.sidebar.warning("Sube un archivo .gramps para usar Testigos.")
+                    _uploaded = st.sidebar.file_uploader(
+                        t("sidebar_gramps_uploader"), type=['gramps', 'xml'],
+                        key="tst_api_fallback_upload"
+                    )
+                    if _uploaded:
+                        _bytes = _uploaded.read()
+                        _temp_path = BASE_DIR / f"temp_{_uploaded.name}"
+                        _temp_path.write_bytes(_bytes)
+                        st.session_state['tst_gramps_xml_path'] = str(_temp_path)
+                        st.session_state['shared_gramps_bytes'] = _bytes
+                        st.session_state['shared_gramps_name'] = _uploaded.name
+                        st.rerun()
     else:
         shared_bytes = st.session_state.get('shared_gramps_bytes')
         shared_name = st.session_state.get('shared_gramps_name', '')
@@ -1063,11 +1111,17 @@ def render_page():
     if 'tst_note_category_overrides' not in st.session_state:
         st.session_state['tst_note_category_overrides'] = load_note_category_overrides()
 
-    # Requerir archivo GRAMPS subido por el usuario
+    # Requerir archivo GRAMPS en disco (Testigos usa su propio parser XML)
     xml_path = st.session_state.get('tst_gramps_xml_path')
     if not xml_path or not Path(xml_path).exists():
-        st.info(t("sidebar_gramps_header"))
-        st.warning(t("data_no_gramps_xml"))
+        if st.session_state.get("gramps_web_connected"):
+            st.info(
+                "Testigos necesita el archivo .gramps completo. "
+                "Sube un archivo .gramps usando el selector del sidebar."
+            )
+        else:
+            st.info(t("sidebar_gramps_header"))
+            st.warning(t("data_no_gramps_xml"))
         return
 
     # ── Controles del mapa (sidebar) ─────────────────────────────────────────

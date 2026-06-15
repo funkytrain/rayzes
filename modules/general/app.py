@@ -727,6 +727,8 @@ def extract_dates_from_sources(content_bytes: bytes) -> tuple[dict, dict]:
       - parishes: {place_name: [{parish, title, type, start, end}, ...]} para mostrar info
     El formato esperado en el autor de la fuente es "Lugar - Parroquia" (o solo "Lugar").
     """
+    if not content_bytes:
+        return {}, {}
     if content_bytes.startswith(b'\xef\xbb\xbf'):
         content_bytes = content_bytes[3:]
     content_bytes = content_bytes.lstrip()
