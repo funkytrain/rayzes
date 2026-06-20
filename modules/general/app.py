@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # modules/general/app.py — Sección General de Rayzes
 # Sub-páginas: Extremos del árbol | Inconsistencias
 # ============================================================
@@ -3100,21 +3100,18 @@ def render_sidebar():
         render_llm_config_sidebar()
 
 
-def render_page():
-    override_db = st.session_state.get("_gramps_web_db_override")
-    if override_db is not None:
-        # Precomputar projecciones del DB de la API y almacenarlas para que las
-        # subfunciones las encuentren cuando llamen a _cached_parse_extended
-        people_ext  = override_db.to_persons_ext()
-        families_ext = override_db.to_families_ext()
-        st.session_state["_gen_api_people_ext"]   = people_ext
-        st.session_state["_gen_api_families_ext"] = families_ext
+def render_page(ctx=None):
+    _db = (ctx.gramps.db if ctx is not None else None) \
+          or st.session_state.get("_gramps_web_db_override")
+    if _db is not None:
+        # Precomputar proyecciones del DB para que subfunciones las encuentren
+        st.session_state["_gen_api_people_ext"]   = _db.to_persons_ext()
+        st.session_state["_gen_api_families_ext"] = _db.to_families_ext()
         content_bytes = None
     else:
-        content_bytes = (
-            st.session_state.get('gen_uploaded_bytes')
-            or st.session_state.get('shared_gramps_bytes')
-        )
+        content_bytes = (ctx.gramps.bytes_ if ctx is not None else None) \
+                        or st.session_state.get('gen_uploaded_bytes') \
+                        or st.session_state.get('shared_gramps_bytes')
         st.session_state.pop("_gen_api_people_ext", None)
         st.session_state.pop("_gen_api_families_ext", None)
         if not content_bytes:
@@ -3128,3 +3125,4 @@ def render_page():
         page_contexto_historico(content_bytes)
     else:
         page_extremos(content_bytes)
+

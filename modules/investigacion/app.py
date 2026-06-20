@@ -1,4 +1,4 @@
-"""
+﻿"""
 Módulo Investigación — Agenda de tareas genealógicas unificada.
 
 Agrega hallazgos accionables de todos los módulos (General, Family Completion,
@@ -450,7 +450,7 @@ def render_sidebar() -> None:
     st.sidebar.text_input(t("inv_search_placeholder"), key="inv_search")
 
 
-def render_page() -> None:
+def render_page(ctx=None) -> None:
     st.title(t("inv_title"))
     st.caption(t("inv_description"))
 
@@ -728,3 +728,5 @@ def _render_archive_result_page(result: "WitnessArchiveResult") -> None:
         st.markdown(f"**{t('archive_search_links')}**")
         for doc in links_only:
             st.markdown(f"- [{doc.title}]({doc.url})")
+
+

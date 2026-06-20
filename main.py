@@ -143,4 +143,72 @@ if _new_active != active_section:
 # ── 4. Controles de subsección del módulo activo ──────────────────────────────
 render_sidebar()
 
-render_page()
+# ── 5. Backup / Restore de datos de usuario ──────────────────────────────────
+import io as _io
+import zipfile as _zipfile
+from pathlib import Path as _Path
+
+_DATA_DIR = _Path(__file__).parent / "data"
+_BACKUP_FILES = [
+    "confirmed_links.json",
+    "note_category_overrides.json",
+    "archive_findings.json",
+    "family_completion_results.json",
+    "identity_resolution_results.json",
+    "gen_record_dates.json",
+]
+
+st.sidebar.markdown("---")
+with st.sidebar.expander("💾 Backup / Restore", expanded=False):
+    # ── Exportar ──────────────────────────────────────────────────────────────
+    def _build_backup_zip() -> bytes:
+        buf = _io.BytesIO()
+        with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+            for name in _BACKUP_FILES:
+                p = _DATA_DIR / name
+                if p.exists():
+                    zf.write(p, name)
+        return buf.getvalue()
+
+    st.caption(t("backup_export_caption") if "backup_export_caption" in dir() else "Descarga un ZIP con todos los datos guardados.")
+    st.download_button(
+        label="⬇️ Exportar backup",
+        data=_build_backup_zip(),
+        file_name="rayzes_backup.zip",
+        mime="application/zip",
+        key="_backup_download",
+    )
+
+    st.markdown("---")
+
+    # ── Importar ──────────────────────────────────────────────────────────────
+    st.caption("Sube un backup para restaurar los datos. Los archivos existentes serán sobreescritos.")
+    _uploaded_backup = st.file_uploader(
+        "Selecciona rayzes_backup.zip",
+        type=["zip"],
+        key="_backup_upload",
+    )
+    if _uploaded_backup is not None:
+        if st.button("✅ Restaurar backup", key="_backup_restore", type="primary"):
+            try:
+                with _zipfile.ZipFile(_io.BytesIO(_uploaded_backup.read())) as zf:
+                    _restored = []
+                    _skipped = []
+                    for name in zf.namelist():
+                        if name in _BACKUP_FILES:
+                            _DATA_DIR.mkdir(exist_ok=True)
+                            (_DATA_DIR / name).write_bytes(zf.read(name))
+                            _restored.append(name)
+                        else:
+                            _skipped.append(name)
+                if _restored:
+                    st.success(f"Restaurados: {', '.join(_restored)}")
+                if _skipped:
+                    st.warning(f"Ignorados (no reconocidos): {', '.join(_skipped)}")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Error al restaurar: {_e}")
+
+from modules.shared.app_context import build_app_context
+_ctx = build_app_context()
+render_page(_ctx)

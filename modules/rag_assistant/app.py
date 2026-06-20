@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 
@@ -166,20 +166,27 @@ def _parse_tool_call(text: str) -> tuple[str, dict] | None:
     return None
 
 
-def _answer_question(question: str, index, history: list[dict]) -> tuple[str, list]:
+def _answer_question(question: str, index, history: list[dict], ctx=None) -> tuple[str, list]:
     from modules.rag_assistant.retriever import retrieve
     from modules.rag_assistant.prompt_builder import build_messages, DEFAULT_SYSTEM_PROMPT
-    from modules.rag_assistant.llm_client import chat_completion
+    from modules.rag_assistant.llm_client import chat_completion, chat_completion_with_config
     from modules.rag_assistant.tools import execute_tool
     import json
 
     top_k = st.session_state.get("rag_top_k", 5)
     max_tokens = st.session_state.get("rag_max_ctx_tokens", 3000)
-    base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
-    model = st.session_state.get("rag_llm_model", "qwen3-14b")
-    llm_timeout = st.session_state.get("rag_llm_timeout", 300)
-    provider = st.session_state.get("rag_llm_provider", "local")
-    api_key = st.session_state.get("rag_llm_api_key") or None
+    if ctx is not None:
+        base_url    = ctx.llm.base_url
+        model       = ctx.llm.model
+        llm_timeout = ctx.llm.timeout
+        provider    = ctx.llm.provider
+        api_key     = ctx.llm.api_key
+    else:
+        base_url    = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
+        model       = st.session_state.get("rag_llm_model", "qwen3-14b")
+        llm_timeout = st.session_state.get("rag_llm_timeout", 300)
+        provider    = st.session_state.get("rag_llm_provider", "local")
+        api_key     = st.session_state.get("rag_llm_api_key") or None
     max_answer = min(max_tokens // 2, 2000)
 
     retrieved = retrieve(question, index, top_k=top_k, base_url=base_url, model=model,
@@ -410,17 +417,19 @@ def render_sidebar() -> None:
             st.sidebar.caption(t("rag_index_chunks_docs").format(n=n_docs))
 
 
-def render_page() -> None:
+def render_page(ctx=None) -> None:
     st.title(t("rag_page_title"))
     st.caption(t("rag_page_caption"))
 
-    content_bytes = st.session_state.get("shared_gramps_bytes")
-    override_db = st.session_state.get("_gramps_web_db_override")
-    if not content_bytes and not override_db:
+    content_bytes = (ctx.gramps.bytes_ if ctx is not None else None) \
+                    or st.session_state.get("shared_gramps_bytes")
+    _has_db = (ctx is not None and ctx.gramps.db is not None) \
+              or bool(st.session_state.get("_gramps_web_db_override"))
+    if not content_bytes and not _has_db:
         st.info(t("rag_no_gramps_file"))
         return
     if not content_bytes:
-        # API mode: RAG index requires raw bytes to build; inform the user
+        # RAG index requires raw bytes; API-only mode not supported
         st.info(t("rag_no_gramps_file"))
         return
 
@@ -454,7 +463,7 @@ def render_page() -> None:
         if pending:
             with st.chat_message("assistant"):
                 with st.spinner(t("rag_thinking")):
-                    answer, sources = _answer_question(pending, rag_index, history[:-1])
+                    answer, sources = _answer_question(pending, rag_index, history[:-1], ctx=ctx)
                 st.markdown(answer)
             history.append({"role": "assistant", "content": answer})
             st.session_state["rag_last_sources"] = sources
@@ -478,3 +487,5 @@ def render_page() -> None:
                 st.caption(chunk.chunk_id)
                 preview = chunk.text[:400] + ("…" if len(chunk.text) > 400 else "")
                 st.text(preview)
+
+

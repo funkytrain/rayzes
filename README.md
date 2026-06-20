@@ -1204,7 +1204,26 @@ The following files in `data/` are created and updated automatically as you use 
 | `rag_index/` | Search index for the AI Assistant (chunks, TF-IDF matrix, optional embeddings, pre-computed statistics); rebuilt automatically when source data changes |
 | `media_linker_registro.json` | Registry of images already linked to GRAMPS by the Vincular Imágenes module; skipped on future scans |
 
-These files persist between sessions. Back them up if you want to preserve your review work.
+These files persist between sessions.
+
+### Backup and restore
+
+A **💾 Backup / Restore** expander is always available at the bottom of the sidebar, regardless of which module is active. It lets you export and import all user data in a single ZIP file — useful when migrating to a new machine or reinstalling the app.
+
+**Export**: click **⬇️ Exportar backup** to download `rayzes_backup.zip`. The archive contains the following files (only those that exist on disk are included):
+
+| File included in backup | Purpose |
+|---|---|
+| `confirmed_links.json` | Witness identity confirmations and rejections (manual work, not regenerable) |
+| `note_category_overrides.json` | Manual note category reclassifications |
+| `archive_findings.json` | Cached archive search results (expensive to regenerate — LLM calls) |
+| `family_completion_results.json` | Confirmed parent–child candidates |
+| `identity_resolution_results.json` | Scored tree–witness candidate pairs |
+| `gen_record_dates.json` | Record coverage ranges per place |
+
+The RAG index (`data/rag_index/`) and historical reference data (`data/historical/`) are excluded — they are either regenerated automatically from your `.gramps` file or are part of the application installation.
+
+**Restore**: upload a previously exported `rayzes_backup.zip` using the file picker in the same expander, then click **✅ Restaurar backup**. Only files whose names are in the list above are extracted; any other content in the ZIP is silently ignored. Existing files are overwritten. The app reruns automatically after a successful restore.
 
 ---
 

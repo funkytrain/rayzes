@@ -38,7 +38,8 @@ class ArchiveSource:
 
 
 def _pares_url(name: str, year_min: int | None = None, year_max: int | None = None) -> str:
-    params: dict = {"fraseExacta": name}
+    # PARES usa el parámetro 'nm' para búsqueda de texto libre en el nombre/descripción
+    params: dict = {"nm": name}
     if year_min:
         params["anio1"] = str(year_min)
     if year_max:

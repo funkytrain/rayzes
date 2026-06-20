@@ -1,4 +1,4 @@
-import math
+﻿import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -443,14 +443,19 @@ def render_sidebar():
     st.sidebar.checkbox(t("geo_migration_lines"), value=True, key="mig_show_lines")
 
 
-def render_page():
-    db = st.session_state.get("_gramps_web_db_override")
-    if db is None:
-        content_bytes = st.session_state.get("shared_gramps_bytes")
-        if not content_bytes:
-            st.info(t("sidebar_gramps_uploader"))
-            return
-        db = _cached_parse(content_bytes)
+def render_page(ctx=None):
+    if ctx is not None and ctx.gramps.db is not None:
+        db = ctx.gramps.db
+    elif ctx is not None and ctx.gramps.bytes_:
+        db = _cached_parse(ctx.gramps.bytes_)
+    else:
+        db = st.session_state.get("_gramps_web_db_override")
+        if db is None:
+            content_bytes = st.session_state.get("shared_gramps_bytes")
+            if not content_bytes:
+                st.info(t("sidebar_gramps_uploader"))
+                return
+            db = _cached_parse(content_bytes)
     period_yrs = st.session_state.get("mig_period_yrs", 25)
     show_lines = st.session_state.get("mig_show_lines", True)
 
@@ -766,3 +771,4 @@ def _has_key(key: str) -> bool:
         return t(key) != key
     except Exception:
         return False
+

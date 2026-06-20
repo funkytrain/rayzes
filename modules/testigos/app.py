@@ -118,24 +118,6 @@ from modules.testigos.possible_relatives import (
 
 USER = "admin"
 
-# Globals inicializados por render_page() antes de llamar a las page_* functions
-df = pd.DataFrame()
-df_places = pd.DataFrame()
-df_notes = pd.DataFrame()
-df_super = pd.DataFrame()
-CONF = {}
-places_index = {}
-subj_id_map = {}
-gramps_index = {}
-gramps_id_map = {}
-by_witness = defaultdict(list)
-MAP_MODE = "1 — Migraciones"
-YEAR_FROM = 0
-YEAR_TO = 9999
-FUZZY = 70
-MIN_APPS = 2
-MAX_DIST = 0.0
-
 # ---------------- Utilities ----------------
 # strip_accents, normalize_name, haversine_km, year_from_date_str → modules.shared.utils
 normalize = normalize_name  # alias para compatibilidad con llamadas existentes
@@ -245,7 +227,7 @@ def load_data_from_xml_or_csv():
     df['witness_norm'] = df['witness_raw'].apply(normalize)
     return df, df_places
 
-# NOTE: Data loading moved to after file uploader UI setup (see below around line 850+)
+# Carga de datos en render_page() → build_witness_dataset()
 
 # ---------------- GRAMPS parsing: unified shared parser (cached by content) ----------------
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -290,7 +272,7 @@ def index_gramps(gramps_path):
     except Exception:
         return {}, {}
 
-# NOTE: gramps_index, gramps_id_map, by_witness, subj_id_map are now built after data loading (see line ~860+)
+# gramps_index, gramps_id_map, by_witness, subj_id_map son accesibles via WitnessDataset
 
 # ---------------- Resolve active GRAMPS path ----------------
 def get_active_gramps_path():
@@ -301,22 +283,25 @@ def get_active_gramps_path():
     return None
 
 # ---------------- family_label (robust) ----------------
-def family_label(node):
+def family_label(node, _gramps_id_map=None, _subj_id_map=None, _df=None):
     try:
         s = str(node)
         if s.startswith("F:ID:"):
             pid = s.split("F:ID:")[-1]
             pid_s = str(pid)
-            if pid_s in gramps_id_map and gramps_id_map[pid_s]:
-                return gramps_id_map[pid_s]
-            if pid_s in subj_id_map and subj_id_map[pid_s]:
-                return subj_id_map[pid_s]
-            try:
-                df_match = df[df['subj_id'].astype(str)==pid_s]
-                if not df_match.empty and df_match.iloc[0].get('subj_name'):
-                    return df_match.iloc[0].get('subj_name')
-            except Exception:
-                pass
+            gmap = _gramps_id_map or {}
+            smap = _subj_id_map or {}
+            if pid_s in gmap and gmap[pid_s]:
+                return gmap[pid_s]
+            if pid_s in smap and smap[pid_s]:
+                return smap[pid_s]
+            if _df is not None:
+                try:
+                    df_match = _df[_df['subj_id'].astype(str)==pid_s]
+                    if not df_match.empty and df_match.iloc[0].get('subj_name'):
+                        return df_match.iloc[0].get('subj_name')
+                except Exception:
+                    pass
             return f"(ID:{pid_s})"
         if s.startswith("F:SN:"):
             return s.replace("F:SN:","").strip() or "Family"
@@ -499,24 +484,19 @@ def stability_mobility_stats(by_witness_map, places_index_map):
         rows.append({'witness':w,'unique_places':unique_places,'avg_km':avg_km,'span_years':span,'appearances':len(events)})
     return pd.DataFrame(rows).sort_values('appearances', ascending=False)
 
-def apply_event_confirmations_and_rebuild_witness_canon():
+def apply_event_confirmations_and_rebuild_witness_canon(df_ref, by_witness_ref):
     """
-    Aplica todas las confirmaciones guardadas al dataframe global `df` y
-    reconstruye `witness_canon` con identidades desambiguadas.
+    Aplica todas las confirmaciones guardadas a df_ref y reconstruye witness_canon.
+    Retorna (df_modificado, by_witness_nuevo) — no modifica estado global.
 
     Lógica:
     1. MERGE (event_groups): todos los eventos de un grupo reciben el mismo
        witness_canon = nombre más frecuente del grupo.  Si hay varios grupos
        con el mismo nombre base se numeran: "Ana Garcia (1)", "Ana Garcia (2)".
-    2. DIFERENTES: pares de event_ids marcados como diferentes.  Cuando dos
-       eventos comparten el mismo nombre raw pero están marcados como diferentes
-       (directamente o por pertenecer a grupos diferentes del mismo nombre),
-       se les asigna witness_canon distintos con sufijo numérico.
-    3. Eventos sin ninguna confirmación: mantienen su witness_raw como canon,
-       salvo que colisionen con un nombre ya numerado (en cuyo caso también
-       reciben sufijo para no confundirse con una identidad confirmada).
+    2. DIFERENTES: pares de event_ids marcados como diferentes.
+    3. Eventos sin confirmación: mantienen witness_raw como canon salvo colisión.
     """
-    global by_witness
+    df = df_ref
 
     conf = load_confirmations()
     event_groups = conf.get('event_groups', {})   # gid -> [event_id, ...]
@@ -646,7 +626,6 @@ def apply_event_confirmations_and_rebuild_witness_canon():
         key = normalize(str(r.get('witness_canon') or r.get('witness_raw') or ''))
         if key:
             new_by_witness[key].append(dict(r))
-    by_witness = new_by_witness
 
     # Snapshot CSV opcional para depuración externa
     try:
@@ -654,16 +633,14 @@ def apply_event_confirmations_and_rebuild_witness_canon():
     except Exception:
         pass
 
-    return True
+    return df, new_by_witness
 
 
 def apply_event_confirmations_and_rebuild_witness_canon_from(dataset: 'WitnessDataset'):
-    """Wrapper dataset-aware: opera sobre dataset.df y actualiza dataset.by_witness."""
-    global df, by_witness
-    df = dataset.df
-    apply_event_confirmations_and_rebuild_witness_canon()
-    dataset.df = df
-    dataset.by_witness = by_witness
+    """Opera sobre dataset.df y actualiza dataset.by_witness. Sin globals."""
+    dataset.df, dataset.by_witness = apply_event_confirmations_and_rebuild_witness_canon(
+        dataset.df, dataset.by_witness
+    )
 
 
 def surnames_stats(df_in, topn=100):
@@ -1093,11 +1070,8 @@ def render_sidebar():
     st.session_state["tst_active_page"] = _menu_options[st.session_state['tst_menu_idx']]
 
 
-def render_page():
+def render_page(ctx=None):
     """Carga datos e invoca la página activa de Testigos."""
-    global df, df_places, df_notes, df_super, CONF, places_index, subj_id_map, gramps_index, gramps_id_map, by_witness
-    global MAP_MODE, YEAR_FROM, YEAR_TO, FUZZY, MIN_APPS, MAX_DIST
-
     # Inicializar session_state de confirmaciones
     if 'tst_confirmed_links' not in st.session_state:
         try:
@@ -1111,18 +1085,34 @@ def render_page():
     if 'tst_note_category_overrides' not in st.session_state:
         st.session_state['tst_note_category_overrides'] = load_note_category_overrides()
 
-    # Requerir archivo GRAMPS en disco (Testigos usa su propio parser XML)
-    xml_path = st.session_state.get('tst_gramps_xml_path')
-    if not xml_path or not Path(xml_path).exists():
-        if st.session_state.get("gramps_web_connected"):
-            st.info(
-                "Testigos necesita el archivo .gramps completo. "
-                "Sube un archivo .gramps usando el selector del sidebar."
-            )
-        else:
-            st.info(t("sidebar_gramps_header"))
-            st.warning(t("data_no_gramps_xml"))
-        return
+    # ── Resolver fuente de datos GRAMPS ──────────────────────────────────────
+    # Prioridad: ctx.gramps.db (API/caché) → bytes del ctx → archivo en disco
+    gramps_db = None
+    if ctx is not None and ctx.gramps.db is not None:
+        gramps_db = ctx.gramps.db
+    elif ctx is not None and ctx.gramps.bytes_:
+        try:
+            gramps_db = _load_gramps_db(ctx.gramps.bytes_)
+        except ValueError as e:
+            st.error(t("err_parse_xml", e=e))
+            return
+    else:
+        xml_path = st.session_state.get('tst_gramps_xml_path')
+        if not xml_path or not Path(xml_path).exists():
+            if st.session_state.get("gramps_web_connected"):
+                st.info(
+                    "Testigos necesita el archivo .gramps completo. "
+                    "Sube un archivo .gramps usando el selector del sidebar."
+                )
+            else:
+                st.info(t("sidebar_gramps_header"))
+                st.warning(t("data_no_gramps_xml"))
+            return
+        try:
+            gramps_db = _load_gramps_db(Path(xml_path).read_bytes())
+        except ValueError as e:
+            st.error(t("err_parse_xml", e=e))
+            return
 
     # ── Controles del mapa (sidebar) ─────────────────────────────────────────
     menu = st.session_state.get("tst_active_page", t("menu_explorar"))
@@ -1145,11 +1135,6 @@ def render_page():
         map_controls['max_dist'] = st.sidebar.number_input(t("sidebar_max_dist"), value=0.0, min_value=0.0)
 
     # ── Construir WitnessDataset ──────────────────────────────────────────────
-    try:
-        gramps_db = _load_gramps_db(Path(xml_path).read_bytes())
-    except ValueError as e:
-        st.error(t("err_parse_xml", e=e))
-        return
 
     _df_notes = load_csv(NOTES_CSV)
     _df_super = load_csv(SUPER_CSV)
@@ -1179,65 +1164,49 @@ def render_page():
     # Apply event confirmations and rebuild witness_canon
     apply_event_confirmations_and_rebuild_witness_canon_from(dataset)
 
-    # Store dataset in session_state for page functions
+    # Store dataset and ctx in session_state for sub-renders within this module
     st.session_state['tst_dataset'] = dataset
+    st.session_state['tst_df_global'] = dataset.df
+    st.session_state['tst_by_witness'] = dataset.by_witness
+    st.session_state['tst_ctx'] = ctx
 
-    # Populate module globals for page functions that still reference them
-    df = dataset.df
-    df_places = dataset.df_places
-    df_notes = dataset.df_notes
-    df_super = dataset.df_super
-    CONF = _store.get_all()
-    places_index = dataset.places_index
-    subj_id_map = dataset.subj_id_map
-    gramps_index = dataset.gramps_index
-    gramps_id_map = dataset.gramps_id_map
-    by_witness = dataset.by_witness
-    st.session_state['tst_df_global'] = df
-    st.session_state['tst_by_witness'] = by_witness
-    MAP_MODE = dataset.map_mode
-    YEAR_FROM = dataset.year_from
-    YEAR_TO = dataset.year_to
-    FUZZY = dataset.fuzzy
-    MIN_APPS = dataset.min_apps
-    MAX_DIST = dataset.max_dist
-
-    # Dispatcher
+    # Dispatcher — dataset passed explicitly; no module-level globals needed
     if menu == t("menu_explorar"):
-        page_explorar()
+        page_explorar(dataset)
     elif menu == t("menu_mapa"):
-        page_mapa()
+        page_mapa(dataset)
     elif menu == t("menu_grafo"):
-        page_grafo()
+        page_grafo(dataset)
     elif menu == t("menu_superpadrinos"):
-        page_superpadrinos()
+        page_superpadrinos(dataset)
     elif menu == t("menu_notas"):
-        page_notas()
+        page_notas(dataset)
     elif menu == t("menu_analisis"):
-        page_analisis()
+        page_analisis(dataset)
     elif menu == t("menu_timeline"):
-        page_timeline()
+        page_timeline(dataset)
     elif menu == t("menu_confirmar"):
-        page_confirmar_coincidencias()
+        page_confirmar_coincidencias(dataset)
     elif menu == t("menu_bayesiana"):
-        page_bayesian_identidad()
+        page_bayesian_identidad(dataset)
     elif menu == t("menu_pendientes"):
-        page_pendientes()
+        page_pendientes(dataset)
     elif menu == t("menu_trayectoria"):
-        page_trayectoria_vital()
+        page_trayectoria_vital(dataset)
     elif menu == t("menu_informe"):
-        page_informe()
+        page_informe(dataset)
     elif menu == t("menu_posibles_familiares"):
-        page_posibles_familiares()
+        page_posibles_familiares(dataset)
     elif menu == t("menu_identity_resolution"):
-        page_identity_resolution()
+        page_identity_resolution(dataset)
 
     try:
         save_confirmations(load_confirmations())
     except Exception:
         pass
 
-def page_explorar():
+def page_explorar(dataset: WitnessDataset):
+    df = dataset.df
     import re as _re_exp
     st.header(t("hdr_explorar"))
     df_f = df.copy()
@@ -1302,7 +1271,16 @@ def page_explorar():
             key="explorar_export_csv"
         )
 
-def page_mapa():
+def page_mapa(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    MAP_MODE = dataset.map_mode
+    YEAR_FROM = dataset.year_from
+    YEAR_TO = dataset.year_to
+    FUZZY = dataset.fuzzy
+    MIN_APPS = dataset.min_apps
+    MAX_DIST = dataset.max_dist
     st.header(t("hdr_mapa"))
     connections, conn_examples = build_place_connections(by_witness, places_index, year_from=YEAR_FROM, year_to=YEAR_TO, min_apps=MIN_APPS, max_km=MAX_DIST, fuzzy_threshold=FUZZY)
     mode = MAP_MODE
@@ -1663,7 +1641,13 @@ def page_mapa():
     else:
         st.info(t("mapa_modo_no_reconocido"))
 
-def page_grafo():
+def page_grafo(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
+    subj_id_map = dataset.subj_id_map
     st.header(t("hdr_grafo"))
     df_f = df.copy()
     max_graph_nodes = st.sidebar.number_input(t("grafo_max_nodos"), min_value=50, max_value=800, value=300)
@@ -1714,7 +1698,7 @@ def page_grafo():
     }
     """)
     for n, a in G.nodes(data=True):
-        label = family_label(n) if str(n).startswith("F:") else (str(n).split("::")[-1] if "::" in str(n) else str(n))
+        label = family_label(n, gramps_id_map, subj_id_map, df) if str(n).startswith("F:") else (str(n).split("::")[-1] if "::" in str(n) else str(n))
         color = '#1f77b4' if str(n).startswith("F:") else '#ff7f0e'
         net.add_node(n, label=str(label), title=str(label), color=color, size=10 + G.degree(n))
     for u, v, a in G.edges(data=True):
@@ -1735,6 +1719,9 @@ def page_grafo():
 
 def _render_witness_profile(witness_name: str):
     """Panel de perfil detallado de un testigo: notas, clase social, rango de vida."""
+    df = st.session_state.get('tst_df_global')
+    if df is None:
+        return
     col_wit = 'witness_canon' if 'witness_canon' in df.columns else 'witness_raw'
     wit_events = df[df[col_wit].astype(str) == witness_name].copy()
     if wit_events.empty:
@@ -1790,7 +1777,8 @@ def _render_witness_profile(witness_name: str):
             st.write(f"  - {ln}")
 
     # ── Búsqueda de documentos de archivo ──────────────────────────────────
-    _render_archive_search_panel(witness_name, wit_sorted)
+    _ctx = st.session_state.get('tst_ctx')
+    _render_archive_search_panel(witness_name, wit_sorted, _ctx)
 
 
 def _render_country_selector(places: list[str], key_suffix: str = "") -> str:
@@ -1840,7 +1828,7 @@ def _render_country_selector(places: list[str], key_suffix: str = "") -> str:
     return chosen_code
 
 
-def _render_archive_search_panel(witness_name: str, wit_sorted):
+def _render_archive_search_panel(witness_name: str, wit_sorted, ctx=None):
     """Sección de búsqueda de documentos históricos en archivos para un testigo."""
     from modules.testigos.archive_search import (
         is_important_witness, get_important_witnesses,
@@ -1871,12 +1859,19 @@ def _render_archive_search_panel(witness_name: str, wit_sorted):
         note_text, note_cat = important_notes[0]
         st.caption(f"**{t('archive_note_label')}** {note_text}  ·  **{t('archive_cat_label')}** {note_cat}")
 
-        # Config LLM
-        base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
-        model = st.session_state.get("rag_llm_model", "qwen3-14b")
-        llm_timeout = st.session_state.get("rag_llm_timeout", 300)
-        llm_provider = st.session_state.get("rag_llm_provider", "local")
-        llm_api_key = st.session_state.get("rag_llm_api_key") or None
+        # Config LLM — desde ctx si está disponible, si no desde session_state
+        if ctx is not None:
+            base_url    = ctx.llm.base_url
+            model       = ctx.llm.model
+            llm_timeout = ctx.llm.timeout
+            llm_provider = ctx.llm.provider
+            llm_api_key  = ctx.llm.api_key
+        else:
+            base_url     = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
+            model        = st.session_state.get("rag_llm_model", "qwen3-14b")
+            llm_timeout  = st.session_state.get("rag_llm_timeout", 300)
+            llm_provider = st.session_state.get("rag_llm_provider", "local")
+            llm_api_key  = st.session_state.get("rag_llm_api_key") or None
 
         # Años y lugares
         years = []
@@ -1929,6 +1924,7 @@ def _render_archive_search_panel(witness_name: str, wit_sorted):
             with st.spinner(t("archive_searching")):
                 result = search_archive_for_witness(
                     candidate,
+                    llm_cfg=ctx.llm if ctx is not None else None,
                     base_url=base_url,
                     model=model,
                     llm_timeout=llm_timeout,
@@ -1979,7 +1975,15 @@ def _render_archive_result(result):
             st.markdown(f"- [{doc.title}]({doc.url})")
 
 
-def page_superpadrinos():
+def page_superpadrinos(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
+    subj_id_map = dataset.subj_id_map
+    df_notes = dataset.df_notes
+    df_super = dataset.df_super
     st.header(t("hdr_superpadrinos"))
     col_wit = 'witness_canon' if 'witness_canon' in df.columns else 'witness_raw'
     if 'witness_canon' in df.columns:
@@ -2123,7 +2127,8 @@ def page_superpadrinos():
             else:
                 st.caption(t("informe_pdf_no"))
 
-def page_notas():
+def page_notas(dataset: WitnessDataset):
+    df = dataset.df
     st.header(t("hdr_notas"))
     notes_df = df[df['note'].notna() & (df['note'] != "")].copy()
     if notes_df.empty:
@@ -2260,144 +2265,6 @@ def page_notas():
                 save_note_category_overrides({})
                 st.success(t("notas_borradas"))
                 st.rerun()
-
-def _render_notas_archive_section_UNUSED(nf):
-    """Sección de búsqueda de documentos de archivo desde la página Notas."""
-    from modules.testigos.archive_search import (
-        is_important_witness, WitnessArchiveResult, search_archive_for_witness,
-    )
-    from modules.testigos.archive_search_store import (
-        load_store, save_store, get_cached, put_result, clear_result,
-    )
-
-    _cur_overrides = st.session_state.get('tst_note_category_overrides', {})
-
-    # Filtrar filas con categoría importante
-    important_rows = []
-    seen_keys = set()
-    for _, row in nf.iterrows():
-        note_text = str(row.get('note', '')).strip()
-        if not note_text or note_text in ('nan', 'None'):
-            continue
-        cat = classify_note(note_text, _cur_overrides)
-        if not is_important_witness(note_text, cat):
-            continue
-        witness_name = str(row.get('witness_raw', '')).strip()
-        if not witness_name or witness_name in ('nan', 'None'):
-            continue
-        key = (witness_name, note_text)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-
-        # Datos temporales y geográficos del testigo en este dataset filtrado
-        wit_rows = nf[nf['witness_raw'].astype(str) == witness_name] if 'witness_raw' in nf.columns else nf.iloc[:0]
-        years = []
-        for d in wit_rows['date_iso'].dropna():
-            try:
-                y = int(str(d)[:4])
-                if 1000 < y < 2100:
-                    years.append(y)
-            except Exception:
-                pass
-        places = list({str(p) for p in wit_rows['place_name'].dropna() if str(p) not in ('', 'nan')})
-
-        important_rows.append(WitnessArchiveResult(
-            witness_name=witness_name,
-            witness_norm=witness_name.lower(),
-            note=note_text,
-            note_category=cat,
-            year_min=min(years) if years else None,
-            year_max=max(years) if years else None,
-            places=sorted(places),
-        ))
-
-    if not important_rows:
-        return
-
-    with st.expander(t("notas_archive_expander", n=len(important_rows)), expanded=False):
-        st.caption(t("notas_archive_caption"))
-
-        base_url = st.session_state.get("rag_llm_base_url", "http://127.0.0.1:9292/v1")
-        model = st.session_state.get("rag_llm_model", "qwen3-14b")
-        llm_timeout = st.session_state.get("rag_llm_timeout", 300)
-        llm_provider = st.session_state.get("rag_llm_provider", "local")
-        llm_api_key = st.session_state.get("rag_llm_api_key") or None
-
-        store = load_store()
-
-        # Botón "Buscar todos"
-        n_uncached = sum(1 for r in important_rows if not get_cached(store, r))
-        col_all, col_info = st.columns([2, 3])
-        search_all = col_all.button(
-            t("arch_search_all_btn"),
-            key="notas_arch_search_all",
-        )
-        col_info.caption(t("arch_uncached_info", n=n_uncached, total=len(important_rows)))
-
-        if search_all:
-            progress = st.progress(0, text=t("arch_searching_all"))
-            for i, candidate in enumerate(important_rows):
-                if get_cached(store, candidate):
-                    progress.progress((i + 1) / len(important_rows), text=f"{candidate.witness_name}…")
-                    continue
-                try:
-                    result = search_archive_for_witness(
-                        candidate, base_url=base_url, model=model, llm_timeout=llm_timeout,
-                        provider=llm_provider, api_key=llm_api_key,
-                    )
-                    put_result(store, result)
-                except Exception as e:
-                    candidate.search_status = "error"
-                    candidate.error_msg = str(e)
-                    put_result(store, candidate)
-                progress.progress((i + 1) / len(important_rows), text=f"{candidate.witness_name}…")
-            save_store(store)
-            progress.empty()
-            st.rerun()
-
-        st.markdown("---")
-        for candidate in important_rows:
-            cached = get_cached(store, candidate)
-            effective = cached or candidate
-            n_docs = len(effective.documents) if effective.search_status == "searched" else 0
-            status_icon = {"pending": "⏳", "searched": "✅" if n_docs > 0 else "🔍", "error": "❌"}.get(effective.search_status, "⏳")
-            year_str = f" · {candidate.year_min}–{candidate.year_max}" if candidate.year_min else ""
-            places_str = ", ".join(candidate.places[:2]) if candidate.places else ""
-
-            header = f"{status_icon} **{candidate.witness_name}** — _{candidate.note}_{year_str}"
-            if places_str:
-                header += f" · {places_str}"
-
-            with st.expander(header, expanded=(effective.search_status == "searched" and n_docs > 0)):
-                col_s, col_c = st.columns([2, 1])
-                search_clicked = col_s.button(
-                    t("archive_search_btn"),
-                    key=f"notas_arch_{candidate.witness_norm[:30]}_{candidate.note[:15]}",
-                )
-                if cached and col_c.button(
-                    t("archive_clear_cache"),
-                    key=f"notas_clr_{candidate.witness_norm[:30]}_{candidate.note[:15]}",
-                ):
-                    clear_result(store, candidate)
-                    save_store(store)
-                    st.rerun()
-
-                if search_clicked:
-                    with st.spinner(t("archive_searching")):
-                        result = search_archive_for_witness(
-                            candidate, base_url=base_url, model=model, llm_timeout=llm_timeout,
-                            provider=llm_provider, api_key=llm_api_key,
-                        )
-                    put_result(store, result)
-                    save_store(store)
-                    st.rerun()
-
-                if cached:
-                    _render_archive_result(cached)
-                else:
-                    st.caption(t("archive_not_searched_yet"))
-
 
 # ---------------- Fase 1 & 2: Funciones de análisis ----------------
 
@@ -3147,7 +3014,7 @@ def compute_bridge_families(_df_in, k_betweenness: int = 0):
         total_ev = sum(G[fn][w].get('weight', 1) for w in witness_neighbors)
         rows.append({
             'node': fn,
-            'label': family_label(fn),
+            'label': family_label(fn, gramps_id_map, subj_id_map, df),
             'betweenness': round(bw_val, 6),
             'betweenness_norm': bw_norm,
             'n_padrinos': n_wit,
@@ -3182,7 +3049,7 @@ def get_family_godparent_connections(family_node: str, G):
         raw_name = parts[1] if len(parts) == 2 else str(wn)
         peso = G[family_node][wn].get('weight', 1)
         otras = [
-            family_label(v)
+            family_label(v, gramps_id_map, subj_id_map, df)
             for v in G.neighbors(wn)
             if str(v).startswith('F:') and v != family_node
         ]
@@ -3198,7 +3065,16 @@ def get_family_godparent_connections(family_node: str, G):
     return pd.DataFrame(rows).sort_values('n_otras_familias', ascending=False).reset_index(drop=True)
 
 
-def page_analisis():
+def page_analisis(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
+    subj_id_map = dataset.subj_id_map
+    df_notes = dataset.df_notes
+    df_super = dataset.df_super
+    CONF = _store.get_all()
     st.header(t("hdr_analisis"))
     st.subheader(t("sub_reciprocidad"))
     minc = st.number_input(t("analisis_min_reciproco"), value=1, min_value=1)
@@ -3894,7 +3770,7 @@ def _render_comparison_map(events_a, events_b, places_index_map, label_a, label_
     embed_folium(m, width=900, height=400)
 
 
-def page_confirmar_coincidencias():
+def page_confirmar_coincidencias(dataset: WitnessDataset):
     """
     Página mejorada de confirmaciones:
       - clusters automáticos
@@ -3904,6 +3780,9 @@ def page_confirmar_coincidencias():
       - marcar cluster como revisado (status)
       - persistencia de acciones (user + timestamp)
     """
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
     st.header(t("hdr_confirmar"))
 
     # ── Comparador de dos testigos ──────────────────────────────────────────
@@ -4192,7 +4071,9 @@ def page_confirmar_coincidencias():
     if display_count == 0:
         st.info(t("empty_clusters_mapa"))
 
-def page_timeline():
+def page_timeline(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
     st.header(t("hdr_timeline"))
 
     if not PLOTLY_OK:
@@ -5136,7 +5017,10 @@ def resolve_identity_clusters(
 
 # ── Página UI Fase 5 ──────────────────────────────────────────────────────────
 
-def page_bayesian_identidad():
+def page_bayesian_identidad(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
     st.header(t("hdr_bayesiana"))
     st.markdown(
         "Calcula la probabilidad de que dos registros de testigos con nombre similar "
@@ -5163,7 +5047,7 @@ def page_bayesian_identidad():
     # ── Construir grafo ──
     st.info(t("timeline_error_bayes"))
     with st.spinner(t("bayes_analizando")):
-        pidx = places_index if 'places_index' in dir() else {}
+        pidx = places_index
         try:
             identity_graph = build_identity_probability_graph(df, pidx, min_name_sim=min_sim)
         except Exception as e:
@@ -5719,7 +5603,12 @@ def try_export_pdf(html_str: str):
 # Nueva página: Trayectoria vital
 # ─────────────────────────────────────────────────────────────────────────────
 
-def page_trayectoria_vital():
+def page_trayectoria_vital(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
     st.header(t("hdr_trayectoria"))
 
     all_witnesses = sorted(by_witness.keys())
@@ -5952,7 +5841,13 @@ def page_trayectoria_vital():
 # FUNCIONALIDAD: Informe narrativo exportable (Testigo / Familia / Red global)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def page_informe():
+def page_informe(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
+    subj_id_map = dataset.subj_id_map
     st.header(t("hdr_informe"))
     st.caption(t("informe_caption_genera"))
 
@@ -6207,7 +6102,9 @@ def page_informe():
 # Nueva página: Pendientes (casos sin resolver)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def page_pendientes():
+def page_pendientes(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
     st.header(t("hdr_pendientes"))
     st.markdown(
         "Clusters de nombres similares donde no todos los eventos han sido confirmados. "
@@ -7327,7 +7224,11 @@ def _save_possible_relatives(relatives):
 # PÁGINA: Posibles familiares por coincidencia de apellido
 # ─────────────────────────────────────────────────────────────────────────────
 
-def page_posibles_familiares():
+def page_posibles_familiares(dataset: WitnessDataset):
+    df = dataset.df
+    by_witness = dataset.by_witness
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
     st.title(t("pfam_titulo"))
     st.info(t("pfam_descripcion"))
 
@@ -7687,11 +7588,17 @@ def _save_possible_relatives(relatives):
 # Página: Resolución árbol–testigos
 # ─────────────────────────────────────────────────────────────────────────────
 
-def page_identity_resolution():
+def page_identity_resolution(dataset: WitnessDataset):
     """
     Motor de identidad: cruza todos los testigos con todas las personas del árbol GRAMPS
     usando el modelo bayesiano existente para generar una cola de trabajo priorizada.
     """
+    df = dataset.df
+    by_witness = dataset.by_witness
+    places_index = dataset.places_index
+    gramps_index = dataset.gramps_index
+    gramps_id_map = dataset.gramps_id_map
+    subj_id_map = dataset.subj_id_map
     from modules.testigos.identity_resolution import (
         build_candidate_pairs, score_candidate_pairs, prioritize_pairs,
         load_resolution_results, save_resolution_results, CandidatePair,

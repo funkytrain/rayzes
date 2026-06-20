@@ -310,12 +310,12 @@ _BNE_BASE = "https://bvpb.mcu.es/es/consulta/busqueda.do"
 
 def build_pares_search_url(name: str, year_min: int | None = None, year_max: int | None = None) -> str:
     """
-    Construye URL de búsqueda PARES usando el parámetro fraseExacta (campo
-    'Con la frase exacta' del formulario avanzado). Opcionalmente añade rango
-    de fechas con anio1/anio2.
+    Construye URL de búsqueda PARES usando el parámetro 'nm' (Nombre/descripción),
+    que acepta palabras sueltas y funciona sin requerir campos adicionales.
+    Opcionalmente añade rango de fechas con anio1/anio2.
     """
     import urllib.parse
-    params = {"fraseExacta": name}
+    params: dict = {"nm": name}
     if year_min:
         params["anio1"] = str(year_min)
     if year_max:
@@ -401,11 +401,12 @@ def fetch_pares_results(
 
 def search_archive_for_witness(
     result: WitnessArchiveResult,
-    base_url: str,
-    model: str,
+    base_url: str = "",
+    model: str = "",
     llm_timeout: int = 120,
     provider: str = "local",
     api_key: str | None = None,
+    llm_cfg=None,
 ) -> WitnessArchiveResult:
     """
     Ejecuta el pipeline completo de búsqueda para un testigo:
@@ -413,24 +414,25 @@ def search_archive_for_witness(
     2. Se busca en PARES y otros archivos
     3. LLM evalúa relevancia de cada resultado
     4. Se devuelve el result actualizado con documentos y resumen
+
+    Acepta parámetros sueltos o un LLMConfig via llm_cfg.
     """
-    from modules.rag_assistant.llm_client import chat_completion
+    from modules.rag_assistant.llm_client import chat_completion, chat_completion_with_config
+
+    if llm_cfg is not None:
+        def _llm(messages, max_tokens, temperature):
+            return chat_completion_with_config(messages, llm_cfg, max_tokens=max_tokens, temperature=temperature)
+    else:
+        def _llm(messages, max_tokens, temperature):
+            return chat_completion(messages, base_url=base_url, model=model, max_tokens=max_tokens,
+                                   temperature=temperature, timeout=llm_timeout, provider=provider, api_key=api_key)
 
     ctx = build_search_context(result)
 
     # Paso 1: LLM genera queries
     try:
         query_messages = build_query_prompt(ctx)
-        query_response = chat_completion(
-            query_messages,
-            base_url=base_url,
-            model=model,
-            max_tokens=600,
-            temperature=0.2,
-            timeout=llm_timeout,
-            provider=provider,
-            api_key=api_key,
-        )
+        query_response = _llm(query_messages, max_tokens=600, temperature=0.2)
         query_data = parse_llm_json(query_response)
         queries = query_data.get("queries", [])
         context_note = query_data.get("contexto_historico", "")
@@ -520,16 +522,7 @@ def search_archive_for_witness(
         docs_texts = [f"[{d.get('archive','?')}] {d.get('title','Sin título')} — {d.get('url','')}" for d in raw_docs]
         try:
             eval_messages = build_evaluation_prompt(ctx, docs_texts)
-            eval_response = chat_completion(
-                eval_messages,
-                base_url=base_url,
-                model=model,
-                max_tokens=800,
-                temperature=0.1,
-                timeout=llm_timeout,
-                provider=provider,
-                api_key=api_key,
-            )
+            eval_response = _llm(eval_messages, max_tokens=800, temperature=0.1)
             eval_data = parse_llm_json(eval_response)
             evaluaciones = eval_data.get("evaluaciones", [])
             llm_summary = eval_data.get("resumen", context_note)

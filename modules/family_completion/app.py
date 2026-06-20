@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # modules/family_completion/app.py — Family Completion Engine
 # Batch Bayesiano: detecta contrayentes sin padres y propone
 # candidatos usando la misma lógica de scoring de general/app.py
@@ -779,17 +779,18 @@ def render_sidebar():
 # Página principal
 # ============================================================
 
-def render_page():
-    override_db = st.session_state.get("_gramps_web_db_override")
-    if override_db is not None:
-        content_bytes = None
-        db = override_db
-    else:
-        content_bytes = st.session_state.get("shared_gramps_bytes")
-        if not content_bytes:
-            st.info(t("sidebar_gramps_uploader"))
-            return
-        db = None
+def render_page(ctx=None):
+    _gramps_db = (ctx.gramps.db if ctx is not None else None) \
+                 or st.session_state.get("_gramps_web_db_override")
+    _gramps_bytes = (ctx.gramps.bytes_ if ctx is not None else None) \
+                    or st.session_state.get("shared_gramps_bytes")
+
+    if _gramps_db is None and not _gramps_bytes:
+        st.info(t("sidebar_gramps_uploader"))
+        return
+
+    # content_bytes needed for sub-pages that require raw bytes (candidatos)
+    content_bytes = _gramps_bytes if _gramps_db is None else None
 
     active_subpage = st.session_state.get("fce_active_subpage", t("fce_subpage_engine"))
     if active_subpage == t("gen_subpage_candidatos"):
@@ -799,8 +800,7 @@ def render_page():
     st.title(t("section_family_completion"))
     st.caption(t("fce_page_caption"))
 
-    if db is None:
-        db = _cached_parse(content_bytes)
+    db = _gramps_db if _gramps_db is not None else _cached_parse(content_bytes)
     people_ext = db.to_persons_ext()
     families_ext = db.to_families_ext()
     place_coords = _build_place_coords(db)
@@ -958,3 +958,4 @@ def render_page():
         else:
             _render_result_detail(case, db, people_ext, families_ext, place_coords, config,
                                    content_bytes=content_bytes)
+

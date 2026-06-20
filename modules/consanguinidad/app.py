@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import networkx as nx
 from pyvis.network import Network
@@ -1117,7 +1117,7 @@ def _cached_inbreeding_results(content_bytes: bytes, max_gen: int):
     return results, cache, families
 
 
-def render_page():
+def render_page(ctx=None):
     """Renderiza la interfaz principal de Consanguinidad."""
     st.title(t("title"))
     if not st.session_state.get("cng_analysis_done", False):
@@ -1126,14 +1126,16 @@ def render_page():
     max_gen = st.session_state.get("cng_max_gen", 8)
     f_threshold = st.session_state.get("cng_f_threshold", 0.0)
 
-    override_db = st.session_state.get("_gramps_web_db_override")
-    if override_db is not None:
-        people  = override_db.to_persons_dict()
-        families_dict = override_db.to_families_dict()
+    _db = (ctx.gramps.db if ctx is not None else None) \
+          or st.session_state.get("_gramps_web_db_override")
+    if _db is not None:
+        people  = _db.to_persons_dict()
+        families_dict = _db.to_families_dict()
         with st.spinner("Analizando..."):
             results, cache, families = _run_inbreeding(people, families_dict, max_gen)
     else:
-        content = st.session_state.get("cng_uploaded_bytes")
+        content = (ctx.gramps.bytes_ if ctx is not None else None) \
+                  or st.session_state.get("cng_uploaded_bytes")
         if content is None:
             st.warning(t("upload_warning"))
             return
@@ -1145,10 +1147,8 @@ def render_page():
         return
 
     # Rebuild graph from parsed data (fast: just node/edge insertion)
-    if override_db is not None:
-        _people_g = override_db.to_persons_dict()
-        _fams_g   = override_db.to_families_dict()
-        G = build_graph(_people_g, _fams_g)
+    if _db is not None:
+        G = build_graph(_db.to_persons_dict(), _db.to_families_dict())
     else:
         people, fams = _cached_parse_gramps(content)
         G = build_graph(people, fams)
@@ -2156,3 +2156,4 @@ def _render_main_content(G, df, cache, max_gen, f_threshold, families):
                 # center_for_colormap can be None
                 html = render_pyvis_colormap_by_F(G, df_anal, center_id=center_for_colormap, gens=gens_for_colormap)
                 st.components.v1.html(html, height=700, scrolling=True)
+

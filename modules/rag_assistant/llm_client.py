@@ -135,3 +135,22 @@ def chat_completion(
         return _chat_completion_openai_remote(messages, model, api_key, max_tokens, temperature, timeout)
     else:
         return _chat_completion_local(messages, base_url, model, max_tokens, temperature, timeout)
+
+
+def chat_completion_with_config(
+    messages: list[dict],
+    llm_cfg,
+    max_tokens: int = 1024,
+    temperature: float = 0.3,
+) -> str:
+    """Variante que acepta un LLMConfig en lugar de parámetros sueltos."""
+    return chat_completion(
+        messages,
+        base_url=llm_cfg.base_url,
+        model=llm_cfg.model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=llm_cfg.timeout,
+        provider=llm_cfg.provider,
+        api_key=llm_cfg.api_key,
+    )

@@ -1,4 +1,4 @@
-"""
+﻿"""
 modules/export/app.py — Write-back to GRAMPS
 UI Streamlit para generar un archivo .gramps enriquecido con notas y tags,
 o sincronizar los cambios directamente con Gramps Web API.
@@ -202,15 +202,18 @@ def _render_changelog(changelog: list[dict]) -> None:
         st.info(t("exp_log_empty"))
 
 
-def render_page() -> None:
+def render_page(ctx=None) -> None:
     st.title(t("exp_title"))
 
-    api_connected = bool(st.session_state.get("gramps_web_connected"))
-    db = st.session_state.get("_gramps_web_db_override")
+    api_connected = bool((ctx.gramps.is_api if ctx is not None else None)
+                         or st.session_state.get("gramps_web_connected"))
+    db = (ctx.gramps.db if ctx is not None else None) \
+         or st.session_state.get("_gramps_web_db_override")
     content_bytes: bytes | None = None
 
     if db is None:
-        content_bytes = st.session_state.get("shared_gramps_bytes")
+        content_bytes = (ctx.gramps.bytes_ if ctx is not None else None) \
+                        or st.session_state.get("shared_gramps_bytes")
         if not content_bytes:
             st.info(t("exp_no_file"))
             return
@@ -474,3 +477,5 @@ def render_page() -> None:
                 st.error(t("exp_sync_error", e=result.error))
 
             _render_changelog(api_writer.changelog)
+
+

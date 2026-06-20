@@ -1,4 +1,4 @@
-"""
+﻿"""
 Módulo Rayzes: Vincular Imágenes
 Asocia imágenes de archivos eclesiásticos a eventos/personas en GRAMPS.
 Soporta modo archivo local (descarga .gramps modificado) y modo API (Gramps Web).
@@ -76,10 +76,18 @@ def _obj_type_for_handle(handle: str, db) -> str:
 
 # ── Página principal ─────────────────────────────────────────────────────────
 
-def render_page():
+def render_page(ctx=None):
     st.title(t("section_media_linker"))
 
-    db, api_connected, content_bytes = _get_db_and_mode()
+    if ctx is not None and (ctx.gramps.db is not None or ctx.gramps.bytes_):
+        _db = ctx.gramps.db
+        _bytes = ctx.gramps.bytes_
+        api_connected = ctx.gramps.is_api
+        if _db is None and _bytes:
+            _db = _cached_parse(_bytes)
+        db, content_bytes = _db, _bytes
+    else:
+        db, api_connected, content_bytes = _get_db_and_mode()
 
     if db is None:
         st.info(t("ml_no_db"))
@@ -306,3 +314,4 @@ def _apply_xml(links: list[dict], content_bytes: bytes | None):
         mime="application/gzip",
         help=t("ml_download_help"),
     )
+

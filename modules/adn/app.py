@@ -1,4 +1,4 @@
-# modules/adn/app.py
+﻿# modules/adn/app.py
 # Módulo "ADN & Genética" — Rayzes
 # Tres funcionalidades: Análisis de Fundadores, Predicción de ADN compartido,
 # y trazado de Línea Materna / Paterna pura.
@@ -764,17 +764,20 @@ def render_sidebar():
     )
 
 
-def render_page():
+def render_page(ctx=None):
     st.title(t("adn_title"))
 
     max_gen = st.session_state.get("adn_max_gen", 12)
 
-    override_db = st.session_state.get("_gramps_web_db_override")
-    content = st.session_state.get("adn_uploaded_bytes") or st.session_state.get("shared_gramps_bytes")
-    if override_db is not None:
-        people   = override_db.to_persons_dict()
-        families = override_db.to_families_dict()
+    _db = (ctx.gramps.db if ctx is not None else None) \
+          or st.session_state.get("_gramps_web_db_override")
+    if _db is not None:
+        people   = _db.to_persons_dict()
+        families = _db.to_families_dict()
     else:
+        content = (ctx.gramps.bytes_ if ctx is not None else None) \
+                  or st.session_state.get("adn_uploaded_bytes") \
+                  or st.session_state.get("shared_gramps_bytes")
         if content is None:
             st.info(t("adn_upload_warning"))
             return
@@ -801,3 +804,4 @@ def render_page():
         _render_shared_dna(G, max_gen)
     with tab3:
         _render_lineage(G, max_gen)
+
