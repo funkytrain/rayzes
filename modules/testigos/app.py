@@ -81,6 +81,7 @@ GRAMPS_PATH  = DATA_DIR / "data.gramps"
 CONFIRMED_PATH               = DATA_DIR / "confirmed_links.json"
 NOTE_CATEGORY_OVERRIDES_PATH   = DATA_DIR / "note_category_overrides.json"
 IDENTITY_RESOLUTION_FILE       = DATA_DIR / "identity_resolution_results.json"
+EN_GRAMPS_OVERRIDES_PATH       = DATA_DIR / "en_gramps_overrides.json"
 
 # Almacén tipado para confirmed_links.json — punto único de acceso
 _store = ConfirmedLinksStore(CONFIRMED_PATH)
@@ -143,6 +144,34 @@ def save_confirmations(conf):
     if not ok:
         st.error(t("err_guardar_conf", e="write error"))
     return ok
+
+# ---------------- Overrides manuales de en_gramps ----------------
+
+def load_en_gramps_overrides() -> dict:
+    """Carga overrides manuales de en_gramps desde disco. Clave: 'evento_id|testigo|persona|tipo'."""
+    try:
+        if EN_GRAMPS_OVERRIDES_PATH.exists():
+            return json.loads(EN_GRAMPS_OVERRIDES_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        pass
+    return {}
+
+
+def save_en_gramps_overrides(overrides: dict) -> None:
+    """Persiste los overrides de en_gramps en disco."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        EN_GRAMPS_OVERRIDES_PATH.write_text(
+            json.dumps(overrides, ensure_ascii=False, indent=2), encoding='utf-8'
+        )
+    except Exception as e:
+        st.error(f"Error guardando en_gramps_overrides: {e}")
+
+
+def _en_gramps_row_key(row) -> str:
+    """Clave estable y única por fila de relaciones-inferidas para persistir overrides."""
+    return f"{row.get('evento_id','')}|{row.get('testigo','')}|{row.get('persona_mencionada','')}|{row.get('tipo_relacion','')}"
+
 
 # Similarity function (prefer rapidfuzz if available)
 try:
@@ -283,28 +312,37 @@ def get_active_gramps_path():
     return None
 
 # ---------------- family_label (robust) ----------------
-def family_label(node, _gramps_id_map=None, _subj_id_map=None, _df=None):
+def family_label(node, _gramps_id_map=None, _subj_id_map=None, _df=None,
+                 _subj_family_map=None):
     try:
         s = str(node)
         if s.startswith("F:ID:"):
             pid = s.split("F:ID:")[-1]
             pid_s = str(pid)
+            if pid_s in ('nan', 'None', ''):
+                return 'Sin asignar'
+            # 1. Mapa familia Gramps (F0015 + apellidos padres) — más informativo
+            if _subj_family_map and pid_s in _subj_family_map:
+                return _subj_family_map[pid_s]
+            # 2. Mapa gramps_id_map (Ixxxx → nombre)
             gmap = _gramps_id_map or {}
-            smap = _subj_id_map or {}
-            if pid_s in gmap and gmap[pid_s]:
+            if gmap.get(pid_s):
                 return gmap[pid_s]
-            if pid_s in smap and smap[pid_s]:
+            # 3. Mapa subj_id_map (handle → subj_name)
+            smap = _subj_id_map or {}
+            if smap.get(pid_s):
                 return smap[pid_s]
+            # 4. Búsqueda en DataFrame
             if _df is not None:
                 try:
-                    df_match = _df[_df['subj_id'].astype(str)==pid_s]
+                    df_match = _df[_df['subj_id'].astype(str) == pid_s]
                     if not df_match.empty and df_match.iloc[0].get('subj_name'):
                         return df_match.iloc[0].get('subj_name')
                 except Exception:
                     pass
             return f"(ID:{pid_s})"
         if s.startswith("F:SN:"):
-            return s.replace("F:SN:","").strip() or "Family"
+            return s.replace("F:SN:", "").strip() or "Family"
         return s
     except Exception:
         return str(node)
@@ -331,7 +369,7 @@ def build_family_graph(df_in, use_person_id_if_available=True):
             G.add_edge(subj_node, wit_node, weight=1)
     return G
 
-def build_place_connections(by_witness_map, places_index_map, year_from=0, year_to=9999, min_apps=1, max_km=0.0, fuzzy_threshold=70):
+def build_place_connections(by_witness_map, places_index_map, year_from=0, year_to=9999, min_apps=1, max_km=0.0, fuzzy_threshold=70, max_years=0):
     connections = Counter()
     conn_examples = defaultdict(list)
     def year_ok(date_iso):
@@ -343,14 +381,25 @@ def build_place_connections(by_witness_map, places_index_map, year_from=0, year_
             return True
         except:
             return True
+    def _ev_year(date_iso):
+        if date_iso is None or pd.isna(date_iso) or str(date_iso).strip()=="": return None
+        try:
+            return _parse_gramps_date(date_iso).year
+        except:
+            return None
     for wnorm, events in by_witness_map.items():
         if fuzzy_threshold and fuzzy_threshold>0 and len(wnorm) < 2:
             pass
-        places = [ev.get('place_name') for ev in events if ev.get('place_name') and year_ok(ev.get('date_iso'))]
-        places = [p for p in places if p]
-        if len(set(places)) < 2: continue
-        cnts = Counter(places)
-        unique = sorted(set(places))
+        # Collect per-place lists of years (only events passing the year range filter)
+        place_years = defaultdict(list)
+        for ev in events:
+            pname = ev.get('place_name')
+            if not pname: continue
+            if not year_ok(ev.get('date_iso')): continue
+            place_years[pname].append(_ev_year(ev.get('date_iso')))
+        if len(place_years) < 2: continue
+        cnts = Counter({p: len(ys) for p, ys in place_years.items()})
+        unique = sorted(place_years.keys())
         for i in range(len(unique)):
             for j in range(i+1, len(unique)):
                 p1 = unique[i]; p2 = unique[j]
@@ -363,6 +412,12 @@ def build_place_connections(by_witness_map, places_index_map, year_from=0, year_
                         pass
                     else:
                         if dist > float(max_km): continue
+                if max_years and max_years > 0:
+                    years1 = [y for y in place_years[p1] if y is not None]
+                    years2 = [y for y in place_years[p2] if y is not None]
+                    if years1 and years2:
+                        if min(abs(y1 - y2) for y1 in years1 for y2 in years2) > max_years:
+                            continue
                 connections[(p1,p2)] += 1
                 conn_examples[(p1,p2)].append({'witness': wnorm, 'count_p1': cnts[p1], 'count_p2': cnts[p2]})
     return connections, conn_examples
@@ -1133,6 +1188,7 @@ def render_page(ctx=None):
         map_controls['fuzzy'] = st.sidebar.slider(t("sidebar_fuzzy"), 40, 100, 70)
         map_controls['min_apps'] = st.sidebar.slider(t("sidebar_min_apps"), 1, 20, 2)
         map_controls['max_dist'] = st.sidebar.number_input(t("sidebar_max_dist"), value=0.0, min_value=0.0)
+        map_controls['max_years'] = st.sidebar.slider(t("sidebar_max_years"), 0, 200, 0)
 
     # ── Construir WitnessDataset ──────────────────────────────────────────────
 
@@ -1281,8 +1337,9 @@ def page_mapa(dataset: WitnessDataset):
     FUZZY = dataset.fuzzy
     MIN_APPS = dataset.min_apps
     MAX_DIST = dataset.max_dist
+    MAX_YEARS = dataset.max_years
     st.header(t("hdr_mapa"))
-    connections, conn_examples = build_place_connections(by_witness, places_index, year_from=YEAR_FROM, year_to=YEAR_TO, min_apps=MIN_APPS, max_km=MAX_DIST, fuzzy_threshold=FUZZY)
+    connections, conn_examples = build_place_connections(by_witness, places_index, year_from=YEAR_FROM, year_to=YEAR_TO, min_apps=MIN_APPS, max_km=MAX_DIST, fuzzy_threshold=FUZZY, max_years=MAX_YEARS)
     mode = MAP_MODE
     if mode.startswith("1"):
         st.subheader(t("sub_migraciones"))
@@ -2653,6 +2710,86 @@ def _birth_order_heuristic(df_in, col, by_witness_map, places_index_map):
     return pd.DataFrame(results)
 
 
+def _person_in_gramps_fuzzy(persona: str, _gramps_index: dict,
+                              fuzzy_threshold: float = 0.82) -> bool:
+    """
+    Comprueba si `persona` se corresponde con alguien en `_gramps_index`.
+
+    Fase 1 — Match exacto de clave normalizada completa (ruta rápida).
+
+    Fase 2 — Subset exacto de tokens: todos los tokens de `persona` aparecen
+    literalmente en los tokens de alguna clave de Gramps.
+    Cubre abreviaturas como "JUAN RABASCO" dentro de
+    "JUAN PEDRO FRANCISCO JUSEPE RABASCO RODRIGUEZ".
+
+    Fase 3 — Fuzzy conservador, solo con cuatro salvaguardas:
+      a) Al menos un token de `persona` debe tener match EXACTO en la clave
+         (sirve de ancla para evitar coincidencias completamente accidentales).
+      b) Los tokens sin match exacto deben tener SequenceMatcher.ratio
+         (NO partial_ratio, que es demasiado agresivo con prefijos)
+         ≥ fuzzy_threshold.
+      c) Solo se aplica fuzzy a tokens de ≥ 5 caracteres.
+      d) La relación de longitud min/max entre los tokens comparados debe ser
+         ≥ 0.75 (evita que "MARIA" iguale a "MARIANO" porque uno contiene
+         al otro como prefijo).
+    Cubre variantes ortográficas como "BERTOMEU" ≈ "BERTHOMEU".
+    """
+    if not persona:
+        return False
+    norm_p = normalize(persona)
+
+    # Fase 1: match exacto
+    if _gramps_index.get(norm_p):
+        return True
+
+    tokens_p = [t for t in norm_p.split() if len(t) >= 2]
+    if not tokens_p:
+        return False
+
+    for gramps_key in _gramps_index:
+        tokens_g = gramps_key.split()
+        if not tokens_g:
+            continue
+        tokens_g_set = set(tokens_g)
+
+        exact_matched = [tp for tp in tokens_p if tp in tokens_g_set]
+        unmatched     = [tp for tp in tokens_p if tp not in tokens_g_set]
+
+        # Fase 2: subset exacto completo
+        if not unmatched:
+            return True
+
+        # Fase 3: fuzzy conservador — requiere ancla exacta
+        if not exact_matched:
+            continue  # sin ningún token exacto, descartamos este candidato
+
+        all_fuzzy_ok = True
+        for tp in unmatched:
+            if len(tp) < 5:
+                # Tokens cortos deben coincidir exactamente
+                all_fuzzy_ok = False
+                break
+            best_sim = 0.0
+            for tg in tokens_g:
+                if len(tg) < 4:
+                    continue
+                # Salvaguarda de longitud: evita que "maria" iguale a "mariano"
+                len_ratio = min(len(tp), len(tg)) / max(len(tp), len(tg))
+                if len_ratio < 0.75:
+                    continue
+                sim = SequenceMatcher(None, tp, tg).ratio()
+                if sim > best_sim:
+                    best_sim = sim
+            if best_sim < fuzzy_threshold:
+                all_fuzzy_ok = False
+                break
+
+        if all_fuzzy_ok:
+            return True
+
+    return False
+
+
 @st.cache_data(ttl=3600)
 def extract_note_relations(df_in, _gramps_index):
     """Parsea las notas de testigos buscando relaciones familiares explícitas.
@@ -2698,7 +2835,7 @@ def extract_note_relations(df_in, _gramps_index):
                     persona = ' '.join(m.group(1).strip().split()[:4])
                 else:
                     persona = ''
-                in_gramps = bool(_gramps_index.get(normalize(persona), []) if persona else False)
+                in_gramps = _person_in_gramps_fuzzy(persona, _gramps_index) if persona else False
                 results.append({
                     'testigo': witness, 'tipo_relacion': rel_type,
                     'persona_mencionada': persona, 'evento_id': event_id,
@@ -2715,7 +2852,7 @@ def extract_note_relations(df_in, _gramps_index):
                            if str(w) not in (r['testigo'], 'nan', 'None', '')]
                 if co_wits:
                     r['persona_mencionada'] = co_wits[0]
-                    r['en_gramps'] = bool(_gramps_index.get(normalize(co_wits[0]), []))
+                    r['en_gramps'] = _person_in_gramps_fuzzy(co_wits[0], _gramps_index)
 
     return results
 
@@ -2724,9 +2861,17 @@ def extract_note_relations(df_in, _gramps_index):
 # FUNCIONALIDAD: Endogamia y patrones de padrinos cerrados
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_endogamy_stats(_df_in, min_events: int = 2):
+@st.cache_data(ttl=1800, show_spinner=False)
+def compute_endogamy_stats(_df_in, min_events: int = 2,
+                            common_threshold: int = 0,
+                            decade_window: int = 25):
     """
     Calcula coeficiente de endogamia por familia (apellido de sujeto).
+
+    Si common_threshold > 0, los apellidos con más eventos que ese umbral se
+    sub-dividen por (place_name, ventana temporal de decade_window años) para
+    separar familias no emparentadas que comparten un apellido frecuente.
+    El label resultante es p.ej. "GARCIA — Alzira (1700–1724)".
 
     Returns:
         pd.DataFrame con columnas:
@@ -2736,35 +2881,63 @@ def compute_endogamy_stats(_df_in, min_events: int = 2):
     if _df_in is None or _df_in.empty:
         return pd.DataFrame()
 
+    import re as _re_endo
     col_wit = 'witness_canon' if 'witness_canon' in _df_in.columns else 'witness_raw'
 
     df_clean = _df_in.dropna(subset=['subj_name']).copy()
     df_clean['_apellido_fam'] = df_clean['subj_name'].apply(extract_surname_improved)
     df_clean = df_clean[df_clean['_apellido_fam'] != '']
 
+    def _yr(s):
+        m = _re_endo.match(r'^(\d{4})', str(s or ''))
+        return int(m.group(1)) if m else None
+
+    if common_threshold > 0:
+        df_clean['_year'] = df_clean['date_iso'].apply(_yr)
+        df_clean['_decade'] = df_clean['_year'].apply(
+            lambda y: int(y // decade_window * decade_window) if pd.notna(y) else -1
+        )
+        df_clean['_place_grp'] = df_clean['place_name'].astype(str).apply(
+            lambda p: p.strip() if p.strip() not in ('', 'nan', 'None') else '?'
+        )
+
     rows = []
-    for familia, group in df_clean.groupby('_apellido_fam'):
-        familia = str(familia)
-        total = len(group)
-        if total < min_events:
-            continue
+
+    def _append_row(label, group):
         testigos = [str(w) for w in group[col_wit].dropna() if str(w) not in ('', 'nan', 'None')]
         if not testigos:
-            continue
+            return
+        total = len(group)
+        if total < min_events:
+            return
         unicos = len(set(testigos))
-        coef = round(1.0 - unicos / total, 4)
-        idx = round(unicos / total, 4)
         aps = {extract_surname_improved(w) for w in set(testigos)}
         aps.discard('')
         rows.append({
-            'familia': familia,
+            'familia': label,
             'total_eventos': total,
             'padrinos_unicos': unicos,
-            'coef_endogamia': coef,
-            'idx_diversidad': idx,
+            'coef_endogamia': round(1.0 - unicos / total, 4),
+            'idx_diversidad': round(unicos / total, 4),
             'apellidos_padrinos_n': len(aps),
             'apellidos_padrinos': ', '.join(sorted(aps)),
         })
+
+    for familia, group in df_clean.groupby('_apellido_fam'):
+        familia = str(familia)
+        total = len(group)
+
+        if common_threshold > 0 and total > common_threshold:
+            for (place, decade), sub_grp in group.groupby(['_place_grp', '_decade']):
+                if decade == -1:
+                    continue
+                d0 = int(decade)
+                d1 = d0 + decade_window - 1
+                label = f"{familia} — {place} ({d0}–{d1})"
+                _append_row(label, sub_grp)
+        else:
+            if total >= min_events:
+                _append_row(familia, group)
 
     if not rows:
         return pd.DataFrame()
@@ -2958,12 +3131,112 @@ def build_rank_witness_graph(_df_in, min_events: int = 1, rank_categories=("rang
     return G if len(G.nodes) > 0 else None
 
 
+def build_family_geo_graph(fam_df, places_index, max_km: float = 50.0,
+                            G_rank_bipartite=None,
+                            include_shared_witnesses: bool = True,
+                            max_geo_neighbors: int = 4):
+    """
+    Grafo familia-familia con dos tipos de aristas:
+    - 'geo'  (verde):   familias a distancia ≤ max_km según places_index
+    - 'wit'  (morado):  familias que comparten ≥1 testigo de rango
+                        (proyección del grafo bipartito G_rank_bipartite)
+
+    Nodo = familia de fam_df.  Atributos: label, place, lat, lon,
+           n_rank_witnesses, n_rank_events, witnesses_list.
+    """
+    if nx is None or fam_df is None or fam_df.empty:
+        return None
+
+    import re as _re_geo
+
+    def _place_from_label(lbl):
+        m = _re_geo.search(r'\(([^)]+)\)\s*$', str(lbl))
+        return m.group(1).strip() if m else None
+
+    # ── Construir nodos con coordenadas ───────────────────────────────────────
+    nodes = {}
+    for _, row in fam_df.iterrows():
+        fid = str(row['family_id'])
+        lbl = str(row['label'])
+        place = _place_from_label(lbl)
+        pinfo = places_index.get(place, {}) if place else {}
+        try:
+            lat = float(pinfo['lat']) if pinfo.get('lat') not in (None, '') else None
+            lon = float(pinfo['lon']) if pinfo.get('lon') not in (None, '') else None
+        except Exception:
+            lat = lon = None
+        nodes[fid] = {
+            'label': lbl,
+            'place': place or '?',
+            'lat': lat,
+            'lon': lon,
+            'n_rank_witnesses': int(row.get('n_rank_witnesses', 0)),
+            'n_rank_events':    int(row.get('n_rank_events', 0)),
+            'witnesses_list':   str(row.get('witnesses_list', '')),
+        }
+
+    G = nx.Graph()
+    for fid, attrs in nodes.items():
+        G.add_node(fid, **attrs)
+
+    # ── Aristas geográficas — k vecinos más cercanos ──────────────────────────
+    # Primero recoge todos los candidatos dentro del radio y los ordena por dist.
+    # Luego los añade en orden creciente de distancia (los más próximos primero)
+    # respetando max_geo_neighbors aristas geo por nodo, evitando grafos completos.
+    fid_list = list(nodes.keys())
+    _geo_candidates = []
+    for i in range(len(fid_list)):
+        for j in range(i + 1, len(fid_list)):
+            fa, fb = fid_list[i], fid_list[j]
+            na, nb = nodes[fa], nodes[fb]
+            if na['lat'] is None or nb['lat'] is None:
+                continue
+            dist = haversine_km(na['lat'], na['lon'], nb['lat'], nb['lon'])
+            if dist is not None and dist <= max_km:
+                _geo_candidates.append((dist, fa, fb))
+    _geo_candidates.sort()
+    _geo_deg = {}
+    for _dist, fa, fb in _geo_candidates:
+        _da = _geo_deg.get(fa, 0)
+        _db = _geo_deg.get(fb, 0)
+        if max_geo_neighbors <= 0 or (_da < max_geo_neighbors and _db < max_geo_neighbors):
+            G.add_edge(fa, fb, edge_type='geo', dist_km=round(_dist, 1), color='#27ae60')
+            _geo_deg[fa] = _da + 1
+            _geo_deg[fb] = _db + 1
+
+    # ── Aristas de testigo compartido (proyección del bipartito) ─────────────
+    if include_shared_witnesses and G_rank_bipartite is not None:
+        fid_set = set(fid_list)
+        for wit_node in list(G_rank_bipartite.nodes()):
+            if not str(wit_node).startswith('W:'):
+                continue
+            wit_raw = G_rank_bipartite.nodes[wit_node].get('label', str(wit_node))
+            fam_nbrs = [
+                str(v)[2:]   # strip 'F:'
+                for v in G_rank_bipartite.neighbors(wit_node)
+                if str(v).startswith('F:')
+            ]
+            fam_nbrs = [f for f in fam_nbrs if f in fid_set]
+            for fi in range(len(fam_nbrs)):
+                for fj in range(fi + 1, len(fam_nbrs)):
+                    fa, fb = fam_nbrs[fi], fam_nbrs[fj]
+                    if G.has_edge(fa, fb):
+                        ed = G[fa][fb]
+                        if ed.get('edge_type') == 'wit':
+                            ed.setdefault('shared_witnesses', []).append(wit_raw)
+                    else:
+                        G.add_edge(fa, fb, edge_type='wit',
+                                   shared_witnesses=[wit_raw], color='#8e44ad')
+
+    return G if G.number_of_edges() > 0 else None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FUNCIONALIDAD: Familias puente — brokers sociales
 # ─────────────────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def compute_bridge_families(_df_in, k_betweenness: int = 0):
+def compute_bridge_families(_df_in, k_betweenness: int = 0, _subj_label_map=None):
     """
     Ranking de familias puente: familias con alta betweenness centrality en el
     grafo bipartito familias-testigos y alta diversidad de apellidos de padrinos.
@@ -3014,7 +3287,7 @@ def compute_bridge_families(_df_in, k_betweenness: int = 0):
         total_ev = sum(G[fn][w].get('weight', 1) for w in witness_neighbors)
         rows.append({
             'node': fn,
-            'label': family_label(fn, gramps_id_map, subj_id_map, df),
+            'label': family_label(fn, _subj_family_map=_subj_label_map),
             'betweenness': round(bw_val, 6),
             'betweenness_norm': bw_norm,
             'n_padrinos': n_wit,
@@ -3030,7 +3303,7 @@ def compute_bridge_families(_df_in, k_betweenness: int = 0):
     return pd.DataFrame(rows).sort_values('bridge_index', ascending=False).reset_index(drop=True)
 
 
-def get_family_godparent_connections(family_node: str, G):
+def get_family_godparent_connections(family_node: str, G, _subj_label_map=None):
     """
     Para una familia en el grafo, devuelve tabla de padrinos y otras familias
     con las que comparte cada padrino.
@@ -3049,7 +3322,7 @@ def get_family_godparent_connections(family_node: str, G):
         raw_name = parts[1] if len(parts) == 2 else str(wn)
         peso = G[family_node][wn].get('weight', 1)
         otras = [
-            family_label(v, gramps_id_map, subj_id_map, df)
+            family_label(v, _subj_family_map=_subj_label_map)
             for v in G.neighbors(wn)
             if str(v).startswith('F:') and v != family_node
         ]
@@ -3332,6 +3605,13 @@ def page_analisis(dataset: WitnessDataset):
                 st.info(t("analisis_no_relaciones_notas"))
             else:
                 rel_df = pd.DataFrame(rels)
+                # Cargar overrides manuales y aplicar sobre los valores auto-calculados
+                _overrides = load_en_gramps_overrides()
+                rel_df['_row_key'] = rel_df.apply(_en_gramps_row_key, axis=1)
+                rel_df['en_gramps'] = rel_df.apply(
+                    lambda r: _overrides.get(r['_row_key'], r['en_gramps']), axis=1
+                )
+
                 all_rel_types = sorted(rel_df['tipo_relacion'].unique().tolist())
                 col_r1, col_r2 = st.columns([3, 1])
                 with col_r1:
@@ -3346,10 +3626,46 @@ def page_analisis(dataset: WitnessDataset):
                     rf = rf[rf['en_gramps'] == True]
                 n_gramps = int(rel_df['en_gramps'].sum())
                 st.write(t("analisis_n_relaciones", n=len(rf), gramps=n_gramps))
-                st.dataframe(
-                    rf[['testigo', 'tipo_relacion', 'persona_mencionada', 'fecha', 'lugar', 'en_gramps']].head(500),
-                    use_container_width=True
+
+                # Tabla editable: sólo la columna en_gramps es modificable manualmente
+                rf_edit = rf[['testigo', 'tipo_relacion', 'persona_mencionada',
+                               'fecha', 'lugar', 'en_gramps']].head(500).copy()
+                rf_keys = rf['_row_key'].head(500).tolist()
+
+                st.caption("Puedes marcar o desmarcar la columna **en Gramps** manualmente; los cambios se guardan automáticamente.")
+                edited_df = st.data_editor(
+                    rf_edit,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'en_gramps': st.column_config.CheckboxColumn(
+                            'en Gramps',
+                            help='¿Existe esta persona en el árbol Gramps? '
+                                 'Marca o desmarca para corregir detecciones automáticas.',
+                        ),
+                        'testigo':           st.column_config.TextColumn(disabled=True),
+                        'tipo_relacion':     st.column_config.TextColumn(disabled=True),
+                        'persona_mencionada': st.column_config.TextColumn(disabled=True),
+                        'fecha':             st.column_config.TextColumn(disabled=True),
+                        'lugar':             st.column_config.TextColumn(disabled=True),
+                    },
+                    key="rel_notas_data_editor",
                 )
+
+                # Detectar cambios respecto al estado mostrado y guardar
+                if edited_df is not None and len(edited_df) == len(rf_edit):
+                    new_overrides = dict(_overrides)
+                    changed = False
+                    for _i in range(len(rf_edit)):
+                        orig_val = bool(rf_edit.iloc[_i]['en_gramps'])
+                        edit_val = bool(edited_df.iloc[_i]['en_gramps'])
+                        if orig_val != edit_val:
+                            new_overrides[rf_keys[_i]] = edit_val
+                            changed = True
+                    if changed:
+                        save_en_gramps_overrides(new_overrides)
+                        st.toast("✓ en_gramps actualizado y guardado.", icon="✅")
+
                 st.write(t("analisis_por_tipo"))
                 st.write(rel_df['tipo_relacion'].value_counts())
         except Exception as e:
@@ -3361,7 +3677,38 @@ def page_analisis(dataset: WitnessDataset):
     st.caption(t("analisis_endogamia_caption"))
     try:
         min_ev_endo = st.slider(t("analisis_min_eventos_familia"), 1, 30, 3, key="endo_min_ev")
-        endo_df = compute_endogamy_stats(df, min_events=min_ev_endo)
+        endo_cluster = st.checkbox(
+            "Desglosar apellidos comunes por lugar y época",
+            value=False,
+            key="endo_cluster",
+            help="Los apellidos con más eventos que el umbral se sub-dividen en clústeres "
+                 "por localidad y ventana temporal, evitando mezclar familias no emparentadas.",
+        )
+        if endo_cluster:
+            _ec1, _ec2 = st.columns(2)
+            with _ec1:
+                endo_common_thr = st.slider(
+                    "Umbral de apellido común (eventos)",
+                    min_value=5, max_value=100, value=15, step=5,
+                    key="endo_common_thr",
+                    help="Apellidos con más eventos que este umbral se consideran 'comunes' y se desglosarán.",
+                )
+            with _ec2:
+                endo_decade_w = st.slider(
+                    "Ventana temporal (años por clúster)",
+                    min_value=10, max_value=50, value=25, step=5,
+                    key="endo_decade_w",
+                    help="Tamaño del bloque temporal para sub-agrupar: 25 = clústeres de 25 años.",
+                )
+        else:
+            endo_common_thr = 0
+            endo_decade_w = 25
+        endo_df = compute_endogamy_stats(
+            df,
+            min_events=min_ev_endo,
+            common_threshold=endo_common_thr,
+            decade_window=endo_decade_w,
+        )
         if endo_df.empty:
             st.info(t("analisis_no_endogamia"))
         else:
@@ -3456,7 +3803,10 @@ def page_analisis(dataset: WitnessDataset):
                 help="Un valor > 0 usa aproximación por muestreo (más rápido).",
             )
             with st.spinner(t("analisis_calc_puentes")):
-                bridge_df = compute_bridge_families(df, k_betweenness=k_bw)
+                bridge_df = compute_bridge_families(
+                    df, k_betweenness=k_bw,
+                    _subj_label_map=dataset.subj_family_label_map,
+                )
 
             if bridge_df.empty:
                 st.info(t("analisis_no_puentes"))
@@ -3484,7 +3834,10 @@ def page_analisis(dataset: WitnessDataset):
                     if not node_row.empty:
                         fn = node_row.iloc[0]['node']
                         G_bridge = build_family_graph(df, use_person_id_if_available=True)
-                        conn_df = get_family_godparent_connections(fn, G_bridge)
+                        conn_df = get_family_godparent_connections(
+                            fn, G_bridge,
+                            _subj_label_map=dataset.subj_family_label_map,
+                        )
                         if conn_df.empty:
                             st.info(t("analisis_no_conexiones"))
                         else:
@@ -3517,15 +3870,23 @@ def page_analisis(dataset: WitnessDataset):
                 key="rango_cats_filter",
             )
 
-        fam_df, wit_df = high_rank_witness_families(df, min_events=rango_min_events, rank_categories=tuple(rango_cats) if rango_cats else ("rango_social",))
+        _rango_cats_tuple = tuple(rango_cats) if rango_cats else ("rango_social",)
+        fam_df, wit_df = high_rank_witness_families(df, min_events=rango_min_events, rank_categories=_rango_cats_tuple)
 
         if fam_df.empty:
             st.info(t("analisis_rango_sin_datos"))
         else:
-            tab_fam, tab_wit, tab_grafo = st.tabs([
+            # Computar G_rank una sola vez — lo necesitan dos tabs
+            G_rank = None
+            if nx is not None and Network is not None:
+                with st.spinner(t("analisis_calc_puentes")):
+                    G_rank = build_rank_witness_graph(df, min_events=rango_min_events, rank_categories=_rango_cats_tuple)
+
+            tab_fam, tab_wit, tab_grafo, tab_geo = st.tabs([
                 t("analisis_rango_tab_familias"),
                 t("analisis_rango_tab_testigos"),
                 t("analisis_rango_tab_grafo"),
+                "Conexiones entre familias",
             ])
 
             with tab_fam:
@@ -3559,36 +3920,233 @@ def page_analisis(dataset: WitnessDataset):
             with tab_grafo:
                 if nx is None or Network is None:
                     st.warning(t("err_networkx"))
+                elif G_rank is None:
+                    st.info(t("analisis_rango_sin_datos"))
                 else:
-                    with st.spinner(t("analisis_calc_puentes")):
-                        G_rank = build_rank_witness_graph(df, min_events=rango_min_events, rank_categories=tuple(rango_cats) if rango_cats else ("rango_social",))
-                    if G_rank is None:
-                        st.info(t("analisis_rango_sin_datos"))
+                    net_rank = Network(height="620px", width="100%", notebook=False)
+                    net_rank.set_options("""{
+                      "physics": {
+                        "stabilization": {
+                          "enabled": true,
+                          "iterations": 250,
+                          "fit": true
+                        },
+                        "barnesHut": {
+                          "gravitationalConstant": -3000,
+                          "springLength": 140,
+                          "springConstant": 0.03,
+                          "damping": 0.15
+                        }
+                      },
+                      "interaction": { "hover": true, "tooltipDelay": 150 },
+                      "edges": { "smooth": { "enabled": true, "type": "dynamic" } }
+                    }""")
+                    for n, a in G_rank.nodes(data=True):
+                        if a.get('type') == 'witness':
+                            color = '#e07b39'
+                            size  = 12 + 3 * G_rank.degree(n)
+                        else:
+                            color = '#4a90d9'
+                            size  = 10 + 2 * G_rank.degree(n)
+                        net_rank.add_node(
+                            str(n),
+                            label=str(a.get('label', n)),
+                            title=str(a.get('label', n)),
+                            color=color,
+                            size=size,
+                        )
+                    for u, v, a in G_rank.edges(data=True):
+                        net_rank.add_edge(str(u), str(v), value=a.get('weight', 1))
+                    import tempfile as _tf
+                    _tmp_rank = _tf.NamedTemporaryFile(delete=False, suffix='.html')
+                    _tmp_rank_name = _tmp_rank.name
+                    _tmp_rank.close()
+                    net_rank.save_graph(_tmp_rank_name)
+                    _html_rank = open(_tmp_rank_name, 'r', encoding='utf-8').read()
+                    _html_rank = _html_rank.replace(
+                        "network = new vis.Network(container, data, options);",
+                        "network = new vis.Network(container, data, options);\n"
+                        "network.on('stabilized', function() {"
+                        " network.setOptions({ physics: { enabled: false } }); });"
+                    )
+                    st.components.v1.html(_html_rank, height=640, width=1100)
+
+            with tab_geo:
+                st.caption(
+                    "Grafo familia-familia: conexiones por **proximidad geográfica** (verde) "
+                    "y/o **testigo de rango compartido** (morado). "
+                    "Permite descubrir relaciones latentes entre familias que no comparten padrinos."
+                )
+                if nx is None or Network is None:
+                    st.warning(t("err_networkx"))
+                else:
+                    geo_c1, geo_c2, geo_c3 = st.columns(3)
+                    with geo_c1:
+                        geo_max_km = st.slider(
+                            "Distancia máxima (km)",
+                            min_value=5, max_value=200, value=30, step=5,
+                            key="rango_geo_km",
+                            help="Familias a menos de esta distancia se conectan con arista verde.",
+                        )
+                    with geo_c2:
+                        geo_max_nbr = st.slider(
+                            "Máx. vecinos geo por familia",
+                            min_value=1, max_value=10, value=4, step=1,
+                            key="rango_geo_nbr",
+                            help="Límite de aristas verdes por nodo (solo las más cercanas). "
+                                 "Reduce el desorden visual cuando muchas familias están próximas.",
+                        )
+                    with geo_c3:
+                        geo_shared = st.checkbox(
+                            "Testigo compartido",
+                            value=True,
+                            key="rango_geo_shared",
+                            help="Aristas moradas: familias que comparten ≥1 testigo de rango "
+                                 "(aunque no sean geográficamente cercanas).",
+                        )
+
+                    with st.spinner("Calculando conexiones entre familias…"):
+                        G_geo = build_family_geo_graph(
+                            fam_df, places_index,
+                            max_km=geo_max_km,
+                            G_rank_bipartite=G_rank,
+                            include_shared_witnesses=geo_shared,
+                            max_geo_neighbors=geo_max_nbr,
+                        )
+
+                    if G_geo is None:
+                        st.info(
+                            "No se encontraron conexiones con los parámetros actuales. "
+                            "Prueba aumentar la distancia máxima o activa las conexiones por testigo compartido. "
+                            "También es posible que los lugares no tengan coordenadas geocodificadas."
+                        )
                     else:
-                        net_rank = Network(height="620px", width="100%", notebook=False)
-                        for n, a in G_rank.nodes(data=True):
-                            if a.get('type') == 'witness':
-                                color = '#e07b39'
-                                size  = 12 + 3 * G_rank.degree(n)
+                        n_geo_e = sum(1 for _, _, d in G_geo.edges(data=True) if d.get('edge_type') == 'geo')
+                        n_wit_e = sum(1 for _, _, d in G_geo.edges(data=True) if d.get('edge_type') == 'wit')
+                        _gm1, _gm2, _gm3 = st.columns(3)
+                        _gm1.metric("Familias en el grafo", G_geo.number_of_nodes())
+                        _gm2.metric("🟢 Conexiones geográficas", n_geo_e)
+                        _gm3.metric("🟣 Conexiones por testigo", n_wit_e)
+                        st.caption(
+                            f"🟢 Verde = proximidad ≤ {geo_max_km} km (máx. {geo_max_nbr} vecinos/familia)  ·  "
+                            "🟣 Morado = testigo de rango compartido  ·  "
+                            "Tamaño ∝ testigos de rango  ·  "
+                            "Azul = geocodificado, gris = sin coordenadas"
+                        )
+
+                        import math as _math
+
+                        # ── Calcular posiciones geográficas ──────────────────
+                        # Agrupa nodos por (lat, lon) redondeado y los dispersa
+                        # en círculo para que no se solapen entre sí.
+                        from collections import defaultdict as _dd2
+                        _loc_groups = _dd2(list)
+                        for _nid, _a in G_geo.nodes(data=True):
+                            _k = (round(_a['lat'], 4), round(_a['lon'], 4)) \
+                                 if _a.get('lat') is not None else None
+                            _loc_groups[_k].append(_nid)
+
+                        _lats = [k[0] for k in _loc_groups if k is not None]
+                        _lons = [k[1] for k in _loc_groups if k is not None]
+                        _use_geo = bool(_lats)
+
+                        _node_xy = {}
+                        if _use_geo:
+                            _W, _H = 950, 560
+                            _mg = 90
+                            _lat_lo, _lat_hi = min(_lats), max(_lats)
+                            _lon_lo, _lon_hi = min(_lons), max(_lons)
+                            _lat_r = max(_lat_hi - _lat_lo, 0.01)
+                            _lon_r = max(_lon_hi - _lon_lo, 0.01)
+
+                            def _geo_xy(_lat, _lon):
+                                _x = _mg + (_lon - _lon_lo) / _lon_r * (_W - 2 * _mg)
+                                _y = _mg + (_lat_hi - _lat) / _lat_r * (_H - 2 * _mg)
+                                return _x, _y
+
+                            for _loc_k, _nids in _loc_groups.items():
+                                if _loc_k is None:
+                                    continue
+                                _cx, _cy = _geo_xy(_loc_k[0], _loc_k[1])
+                                _n = len(_nids)
+                                _r = max(35, 12 * _n)  # radio del círculo local
+                                for _idx, _nid in enumerate(_nids):
+                                    _ang = 2 * _math.pi * _idx / _n
+                                    _node_xy[str(_nid)] = (
+                                        _cx + _r * _math.cos(_ang),
+                                        _cy + _r * _math.sin(_ang),
+                                    )
+                            # Nodos sin coordenadas: columna a la derecha
+                            _no_coord = _loc_groups.get(None, [])
+                            for _idx, _nid in enumerate(_no_coord):
+                                _node_xy[str(_nid)] = (_W + 120, _mg + _idx * 50)
+
+                        # ── Construir red pyvis ──────────────────────────────
+                        net_geo = Network(height="660px", width="100%", notebook=False)
+
+                        # Desactivar física: layout estático geográfico
+                        net_geo.set_options("""{
+                          "physics": { "enabled": false },
+                          "interaction": {
+                            "hover": true,
+                            "tooltipDelay": 150,
+                            "zoomView": true,
+                            "dragView": true
+                          },
+                          "edges": { "smooth": { "enabled": false } }
+                        }""")
+
+                        for nid, attrs in G_geo.nodes(data=True):
+                            size = 14 + 5 * attrs.get('n_rank_witnesses', 0)
+                            wlist = attrs.get('witnesses_list', '')
+                            # Tooltip en texto plano (vis.js muestra HTML crudo en algunos entornos)
+                            _tip_lines = [
+                                attrs.get('label', str(nid)),
+                                f"Lugar: {attrs.get('place', '?')}",
+                                f"Testigos de rango: {attrs.get('n_rank_witnesses', 0)}",
+                                f"Eventos con rango: {attrs.get('n_rank_events', 0)}",
+                            ]
+                            if wlist:
+                                _tip_lines.append(f"Testigos: {wlist[:100]}{'…' if len(wlist) > 100 else ''}")
+                            title_txt = "\n".join(_tip_lines)
+                            node_color = '#4a90d9' if attrs.get('lat') is not None else '#aaaaaa'
+                            _kw = {}
+                            if _use_geo and str(nid) in _node_xy:
+                                _px, _py = _node_xy[str(nid)]
+                                _kw = {'x': _px, 'y': _py, 'physics': False}
+                            net_geo.add_node(str(nid), label=attrs.get('label', str(nid)),
+                                             title=title_txt, color=node_color,
+                                             size=size, **_kw)
+
+                        for u, v, ed in G_geo.edges(data=True):
+                            if ed.get('edge_type') == 'geo':
+                                etitle = f"Distancia: {ed.get('dist_km', '?')} km"
+                                ecolor = '#27ae60'
+                                ewidth = 1
                             else:
-                                color = '#4a90d9'
-                                size  = 10 + 2 * G_rank.degree(n)
-                            net_rank.add_node(
-                                str(n),
-                                label=str(a.get('label', n)),
-                                title=str(a.get('label', n)),
-                                color=color,
-                                size=size,
-                            )
-                        for u, v, a in G_rank.edges(data=True):
-                            net_rank.add_edge(str(u), str(v), value=a.get('weight', 1))
-                        import tempfile as _tf
-                        _tmp_rank = _tf.NamedTemporaryFile(delete=False, suffix='.html')
-                        _tmp_rank_name = _tmp_rank.name
-                        _tmp_rank.close()
-                        net_rank.save_graph(_tmp_rank_name)
-                        _html_rank = open(_tmp_rank_name, 'r', encoding='utf-8').read()
-                        st.components.v1.html(_html_rank, height=640, width=1100)
+                                shared = ed.get('shared_witnesses', [])
+                                etitle = "Testigo compartido: " + ', '.join(shared[:3])
+                                if len(shared) > 3:
+                                    etitle += f" (+{len(shared)-3} más)"
+                                ecolor = '#8e44ad'
+                                ewidth = max(1, len(shared))
+                            net_geo.add_edge(str(u), str(v), title=etitle,
+                                             color=ecolor, width=ewidth)
+
+                        import tempfile as _tf2
+                        _tmp_geo = _tf2.NamedTemporaryFile(delete=False, suffix='.html')
+                        _tmp_geo_name = _tmp_geo.name
+                        _tmp_geo.close()
+                        net_geo.save_graph(_tmp_geo_name)
+                        _html_geo = open(_tmp_geo_name, 'r', encoding='utf-8').read()
+                        _html_geo = _html_geo.replace(
+                            "network = new vis.Network(container, data, options);",
+                            "network = new vis.Network(container, data, options);\n"
+                            "network.on('stabilized', function() {"
+                            " network.setOptions({ physics: { enabled: false } }); });"
+                        )
+                        st.components.v1.html(_html_geo, height=680, width=1100)
+
     except Exception as e:
         st.error(f"Error en análisis de rango social: {e}")
 
@@ -3655,6 +4213,7 @@ def witness_comparison_stats(wit_a: str, wit_b: str, _by_witness: dict, _places_
         years = []
         places = set()
         families = set()
+        family_ids: dict = {}
         for e in evts:
             d = str(e.get('date_iso', '') or '')
             if len(d) >= 4 and d[:4].isdigit():
@@ -3665,18 +4224,26 @@ def witness_comparison_stats(wit_a: str, wit_b: str, _by_witness: dict, _places_
             sn = extract_surname_improved(str(e.get('subj_name', '') or ''))
             if sn:
                 families.add(sn)
+                sid = str(e.get('subj_id', '') or '').strip()
+                if sid and sid not in ('nan', 'None', ''):
+                    family_ids.setdefault(sn, set()).add(sid)
         return {
             'count': len(evts),
             'year_min': min(years) if years else None,
             'year_max': max(years) if years else None,
             'places': places,
             'families': families,
+            'family_ids': family_ids,
         }
 
     sa = _stats(events_a)
     sb = _stats(events_b)
 
     familias_comun = sa['families'] & sb['families']
+    familias_comun_ids = {
+        sn: sorted(sa['family_ids'].get(sn, set()) | sb['family_ids'].get(sn, set()))
+        for sn in familias_comun
+    }
     lugares_comun = sa['places'] & sb['places']
     overlap_temporal = bool(
         sa['year_min'] is not None and sb['year_min'] is not None
@@ -3699,6 +4266,7 @@ def witness_comparison_stats(wit_a: str, wit_b: str, _by_witness: dict, _places_
         'count_b': sb['count'], 'year_min_b': sb['year_min'], 'year_max_b': sb['year_max'],
         'places_b_n': len(sb['places']), 'families_b_n': len(sb['families']),
         'familias_comun': familias_comun,
+        'familias_comun_ids': familias_comun_ids,
         'lugares_comun': lugares_comun,
         'overlap_temporal': overlap_temporal,
         'bayes_result': bayes_result,
@@ -3828,8 +4396,22 @@ def page_confirmar_coincidencias(dataset: WitnessDataset):
                 # Solapamiento
                 st.markdown(t("sub_solapamiento"))
                 fc = stats_cmp['familias_comun']
+                fc_ids = stats_cmp.get('familias_comun_ids', {})
+                _fam_lbl_map = dataset.subj_family_label_map
                 lc = stats_cmp['lugares_comun']
-                st.write(t("analisis_familias_comun", val=', '.join(sorted(fc)) if fc else t("analisis_ninguna")))
+                if fc:
+                    _fc_parts = []
+                    for _sn in sorted(fc):
+                        _ids = fc_ids.get(_sn, [])
+                        _label = _sn.title()
+                        if _ids:
+                            # Convertir handles internos a etiquetas legibles (F0015 · Apellidos)
+                            _readable = [_fam_lbl_map.get(_id, _id) for _id in _ids]
+                            _label += f" ({', '.join(_readable)})"
+                        _fc_parts.append(_label)
+                    st.write(t("analisis_familias_comun", val=', '.join(_fc_parts)))
+                else:
+                    st.write(t("analisis_familias_comun", val=t("analisis_ninguna")))
                 st.write(t("analisis_lugares_comun", val=', '.join(sorted(lc)) if lc else t("analisis_ninguno")))
                 st.write(t("analisis_actividad_simultanea", val=t("analisis_si") if stats_cmp['overlap_temporal'] else t("analisis_no_val")))
 
@@ -3969,7 +4551,7 @@ def page_confirmar_coincidencias(dataset: WitnessDataset):
                         }
                     save_confirmations(conf_local)
                     # rebuild witness_canon/disambiguation
-                    apply_event_confirmations_and_rebuild_witness_canon()
+                    apply_event_confirmations_and_rebuild_witness_canon_from(dataset)
                     compute_endogamy_stats.clear()
                     compute_bridge_families.clear()
                     st.success(t("confirmar_fusionados", n=len(ev_groups[gid]), gid=gid))
@@ -4626,18 +5208,28 @@ def calculate_social_context_score(events_a: list[dict], events_b: list[dict]) -
         'combined_score': float
     }
     """
-    # Apellidos de familias apadrinadas
-    def _surnames(evs):
+    # Apellidos de familias apadrinadas + IDs del sujeto
+    def _surnames_with_ids(evs):
         snames = set()
+        ids_by_sn: dict = {}
         for e in evs:
             sn = extract_surname_improved(str(e.get('subj_name', '')))
             if sn:
-                snames.add(normalize(sn))
-        return snames
+                norm_sn = normalize(sn)
+                snames.add(norm_sn)
+                sid = str(e.get('subj_id', '') or '').strip()
+                if sid and sid not in ('nan', 'None', ''):
+                    ids_by_sn.setdefault(norm_sn, set()).add(sid)
+        return snames, ids_by_sn
 
-    sn_a = _surnames(events_a)
-    sn_b = _surnames(events_b)
-    shared_fam = len(sn_a & sn_b)
+    sn_a, ids_a = _surnames_with_ids(events_a)
+    sn_b, ids_b = _surnames_with_ids(events_b)
+    shared_fam_set = sn_a & sn_b
+    shared_fam = len(shared_fam_set)
+    shared_family_ids = {
+        sn: sorted(ids_a.get(sn, set()) | ids_b.get(sn, set()))
+        for sn in shared_fam_set
+    }
 
     # Lugares compartidos
     places_a = {normalize(str(e.get('place_name', ''))) for e in events_a if e.get('place_name')}
@@ -4684,6 +5276,7 @@ def calculate_social_context_score(events_a: list[dict], events_b: list[dict]) -
 
     return {
         'shared_family_surnames': shared_fam,
+        'shared_family_ids': shared_family_ids,
         'shared_places': shared_pl,
         'social_class_match': class_match,
         'social_class_a': cls_a,
@@ -5045,7 +5638,6 @@ def page_bayesian_identidad(dataset: WitnessDataset):
             rev_thr = high_thr - 0.05
 
     # ── Construir grafo ──
-    st.info(t("timeline_error_bayes"))
     with st.spinner(t("bayes_analizando")):
         pidx = places_index
         try:
@@ -5153,6 +5745,18 @@ def page_bayesian_identidad(dataset: WitnessDataset):
                 st.markdown(f"**{t('timeline_detalle_ctx')}**")
                 sc1, sc2, sc3 = st.columns(3)
                 sc1.metric(t("bayes_familias_comun"), sd.get('shared_family_surnames', 0))
+                _sfids = sd.get('shared_family_ids', {})
+                if _sfids:
+                    _fam_lbl_map2 = dataset.subj_family_label_map
+                    _sfid_parts = []
+                    for _sn, _ids in sorted(_sfids.items()):
+                        _part = _sn.title()
+                        if _ids:
+                            # Convertir handles internos a etiquetas legibles (F0015 · Apellidos)
+                            _readable2 = [_fam_lbl_map2.get(_id, _id) for _id in sorted(_ids)]
+                            _part += f" ({', '.join(_readable2)})"
+                        _sfid_parts.append(_part)
+                    st.caption("Familias: " + ', '.join(_sfid_parts))
                 sc2.metric(t("bayes_lugares_comun"), sd.get('shared_places', 0))
                 cls_txt = (f"{sd.get('social_class_a','?')} / {sd.get('social_class_b','?')}"
                            if sd.get('social_class_a') or sd.get('social_class_b')
@@ -5204,7 +5808,7 @@ def page_bayesian_identidad(dataset: WitnessDataset):
                                 'user': USER,
                             }
                         save_confirmations(conf_bay)
-                        apply_event_confirmations_and_rebuild_witness_canon()
+                        apply_event_confirmations_and_rebuild_witness_canon_from(dataset)
                         st.success(t("confirmar_fusionados2", n=len(all_ids)))
                         st.cache_data.clear()
                         st.rerun()
@@ -5472,7 +6076,8 @@ def generate_family_html_report(
     return html
 
 
-def generate_network_html_report(_df, _by_witness: dict, _places_index: dict, top_n: int = 20) -> str:
+def generate_network_html_report(_df, _by_witness: dict, _places_index: dict,
+                                  top_n: int = 20, _subj_label_map=None) -> str:
     """
     Genera informe HTML auto-contenido con estadísticas generales de la red.
     """
@@ -5513,7 +6118,7 @@ def generate_network_html_report(_df, _by_witness: dict, _places_index: dict, to
     # Top familias puente
     bridge_section = ""
     try:
-        br_df = compute_bridge_families(_df)
+        br_df = compute_bridge_families(_df, _subj_label_map=_subj_label_map)
         if not br_df.empty:
             br_rows = ""
             for _, row in br_df.head(top_n).iterrows():
@@ -6083,7 +6688,10 @@ def page_informe(dataset: WitnessDataset):
         if st.button(t("informe_btn_red"), key="informe_red_btn"):
             with st.spinner(t("informe_generando")):
                 try:
-                    net_report_html = generate_network_html_report(df, by_witness, places_index, top_n=25)
+                    net_report_html = generate_network_html_report(
+                        df, by_witness, places_index, top_n=25,
+                        _subj_label_map=dataset.subj_family_label_map,
+                    )
                     st.download_button(t("dl_html"), data=net_report_html.encode('utf-8'),
                                        file_name=f"{t('informe_file_red')}.html", mime="text/html",
                                        key="informe_red_dl_html")

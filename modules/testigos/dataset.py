@@ -32,11 +32,15 @@ class WitnessDataset:
     df_super: pd.DataFrame
 
     # Índices derivados
-    places_index: dict      # {place_name → {id, name, lat, lon}}
-    subj_id_map: dict       # {subj_id → subj_name}
-    gramps_index: dict      # {normalize(name) → [{id, name, birth_year, ...}]}
-    gramps_id_map: dict     # {gramps_id → name}
-    by_witness: dict        # {normalize(witness) → [event_dicts]}
+    places_index: dict          # {place_name → {id, name, lat, lon}}
+    subj_id_map: dict           # {subj_id → subj_name}
+    gramps_index: dict          # {normalize(name) → [{id, name, birth_year, ...}]}
+    gramps_id_map: dict         # {gramps_id → name}
+    by_witness: dict            # {normalize(witness) → [event_dicts]}
+    subj_family_label_map: dict = field(default_factory=dict)
+    # {subj_id → "F0015 (Apellido1 · Apellido2)"}
+    # Para cada evento de bautismo, el subj_id es el handle del hijo; este mapa
+    # devuelve la familia de Gramps a la que pertenece como hijo + apellidos de padres.
 
     # Controles del mapa (desde sidebar)
     map_mode: str = "1 — Migraciones"
@@ -45,6 +49,7 @@ class WitnessDataset:
     fuzzy: int = 70
     min_apps: int = 2
     max_dist: float = 0.0
+    max_years: int = 0
 
     @property
     def witness_col(self) -> str:
@@ -74,6 +79,80 @@ def _build_places_index(df_places: pd.DataFrame) -> dict:
             'lon': lon,
         }
     return idx
+
+
+def _build_subj_family_label_map(df: pd.DataFrame, gramps_db) -> dict:
+    """
+    Mapea subj_id (handle del hijo) a una etiqueta legible de familia Gramps:
+    "F0015 (Garcia Mallo · Riesco Rodriguez)"
+
+    Para cada subj_id, busca en qué GrampsFamily aparece ese handle como hijo,
+    luego formatea: ID de familia Gramps + apellidos compuestos de los padres.
+    Si no hay familia, usa el subj_name directamente.
+    """
+    if df is None or df.empty or gramps_db is None:
+        return {}
+
+    # handle del hijo → GrampsFamily (el sujeto es el niño bautizado)
+    child_to_fam: dict = {}
+    # handle del padre/madre → GrampsFamily (el sujeto es un progenitor)
+    parent_to_fam: dict = {}
+    for fam in gramps_db.families.values():
+        for ch_handle in fam.child_handles:
+            if ch_handle not in child_to_fam:
+                child_to_fam[ch_handle] = fam
+        if fam.husband_handle and fam.husband_handle not in parent_to_fam:
+            parent_to_fam[fam.husband_handle] = fam
+        if fam.wife_handle and fam.wife_handle not in parent_to_fam:
+            parent_to_fam[fam.wife_handle] = fam
+
+    def _compound_surname(name: str) -> str:
+        """Extrae apellido compuesto: últimas 2 palabras del nombre completo."""
+        parts = (name or '').split()
+        if len(parts) >= 3:
+            return ' '.join(parts[-2:])
+        return name.strip()
+
+    def _fam_label(fam) -> str:
+        husband = gramps_db.persons.get(fam.husband_handle) if fam.husband_handle else None
+        wife = gramps_db.persons.get(fam.wife_handle) if fam.wife_handle else None
+        surname_parts = []
+        if husband and husband.name:
+            surname_parts.append(_compound_surname(husband.name))
+        if wife and wife.name:
+            surname_parts.append(_compound_surname(wife.name))
+        label = fam.id
+        if surname_parts:
+            label += f" ({' · '.join(surname_parts)})"
+        return label
+
+    result: dict = {}
+    for _, r in df.iterrows():
+        sid = r.get('subj_id')
+        if not sid or str(sid) in ('nan', 'None', ''):
+            continue
+        sid_str = str(sid)
+        if sid_str in result:
+            continue
+
+        # Buscar primero como hijo (caso más común: bautismo donde el sujeto es el niño)
+        fam = child_to_fam.get(sid_str)
+        if fam:
+            result[sid_str] = _fam_label(fam)
+            continue
+
+        # Fallback: buscar como progenitor (el sujeto es padre o madre)
+        fam = parent_to_fam.get(sid_str)
+        if fam:
+            result[sid_str] = _fam_label(fam)
+            continue
+
+        # Último recurso: usar subj_name del evento
+        sname = r.get('subj_name')
+        if sname and str(sname) not in ('nan', 'None', ''):
+            result[sid_str] = str(sname)
+
+    return result
 
 
 def _build_subj_id_map(df: pd.DataFrame) -> dict:
@@ -144,6 +223,7 @@ def build_witness_dataset(
     subj_id_map = _build_subj_id_map(df) if not df.empty else {}
     gramps_index, gramps_id_map = gramps_db.to_gramps_index()
     by_witness = _build_by_witness(df) if not df.empty else defaultdict(list)
+    subj_family_label_map = _build_subj_family_label_map(df, gramps_db) if not df.empty else {}
 
     # ── Controles del mapa ────────────────────────────────────────────────────
     ctrl = map_controls or {}
@@ -158,10 +238,12 @@ def build_witness_dataset(
         gramps_index=gramps_index,
         gramps_id_map=gramps_id_map,
         by_witness=by_witness,
+        subj_family_label_map=subj_family_label_map,
         map_mode=ctrl.get('map_mode', '1 — Migraciones'),
         year_from=ctrl.get('year_from', 0),
         year_to=ctrl.get('year_to', 9999),
         fuzzy=ctrl.get('fuzzy', 70),
         min_apps=ctrl.get('min_apps', 2),
         max_dist=ctrl.get('max_dist', 0.0),
+        max_years=int(ctrl.get('max_years', 0)),
     )
